@@ -10,3 +10,5 @@ Rscript -e 'rmarkdown::render(input = "statistical-analysis-16s.Rmd", output_fil
 Rscript -e 'rmarkdown::render(input = "statistical-analysis-18s.Rmd", output_file = paste0(getwd(), "/../results/statistical-analysis-18s.html"))'
 Rscript -e 'rmarkdown::render(input = "publication-figures.Rmd", output_file = paste0(getwd(), "/../results/publication-figures.html"))'
 ```
+
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.13698456.svg)](https://doi.org/10.5281/zenodo.13698456)
