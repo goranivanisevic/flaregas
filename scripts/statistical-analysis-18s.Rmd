@@ -1,0 +1,1477 @@
+---
+title: "Statistical Analysis of compositional data -- FlareGas -- 18s"
+author: "SES"
+date: "2024-08-28"
+output: html_document
+---
+
+<style type="text/css">
+.main-container {
+  max-width: 1800px;
+  margin-left: auto;
+  margin-right: auto;
+}
+</style>
+
+```{r setup, warning=FALSE, include=FALSE}
+library(ggplot2)
+library(tidyverse)
+library(phyloseq) #http://joey711.github.io/phyloseq/index.html
+library(reshape2)
+library(psadd) #Interactive Taxonomy plot with Krona
+library("RColorBrewer")
+library(ggrepel)
+library(vegan)
+library("DESeq2")
+library(edgeR)
+library(gplots)
+library(patchwork)
+library(ggpubr)
+library(knitr)
+
+library(ggbiplot)
+library("FactoMineR")
+library("factoextra")
+
+library(microbiome)
+library(ALDEx2)
+
+theme_set(theme_bw(base_size = 18))
+devdir <- "../"
+wdir <- paste0(devdir, "results/")
+if( ! dir.exists(wdir) ) { dir.create(wdir) }
+knitr::opts_knit$set(root.dir = wdir)
+figdir <- file.path(wdir,"fig")
+if( ! dir.exists(figdir) ) { dir.create(figdir) }
+knitr::opts_chunk$set(echo = T, results = "hide")
+```
+
+```{r custom-functions, warning=FALSE, include=FALSE}
+tax_stats <- function(phyloseq) {
+  counts <- as.data.frame(otu_table(phyloseq))
+  c <- sum(rowSums(counts))
+  s <- ntaxa(phyloseq)
+  g <- ntaxa(tax_glom(phyloseq, taxrank="Genus"))
+  f <- ntaxa(tax_glom(phyloseq, taxrank="Family"))
+  sprintf("% s: No. reads % s, No. species % s, No. genus % s, No. family % s", deparse(substitute(phyloseq)), c, s, g, f)
+}
+
+
+# https://github.com/lch14forever/microbiomeVizb
+# /94cbfe452a735aadf88733b27b8221a03f450a55/R/utils.R#L68-L86
+#
+#' Duplicated taxa: e.g. maybe multiple species (s__uncultured)
+#' belong to different genera. append the upper level taxa to the taxa to
+#' distinguish this duplicated taxa
+fix_duplicate_tax <- function(ps) {
+    tax <- tax_table(ps)
+    if (ncol(tax) == 1) {
+        return(ps)
+    }
+
+    for (i in 2:ncol(tax)) {
+        tax_uniq <- unique(tax[, i])
+        for (j in seq_along(tax_uniq)) {
+            if (is.na(tax_uniq[j])) next
+            ind <- which(tax[, i] == as.character(tax_uniq[j]))
+            if (length(unique(tax[ind, i - 1])) > 1) {
+                tax[ind, i] <- paste(tax[ind, i - 1], tax[ind, i], sep = "_")
+            }
+        }
+    }
+
+    tax_table(ps) <- tax
+
+    ps
+}
+
+codaSeq.outlier <- function(x, plot.me=TRUE, col=rgb(1,0,0,0.3)){
+
+  pcx <- prcomp(x)
+  mv <- sum(pcx$sdev^2)
+
+  sample.var <-  apply(pcx$x,1,function(y){sum(y^2/mv)})
+
+  cut <- median(apply(pcx$x,1,function(x){sum(x^2/mv)})) + 2 * IQR(apply(pcx$x,1,function(x){sum(x^2/mv)}))
+
+  bad <- names(which(apply(pcx$x,1,function(x){sum(x^2/mv)}) > cut))
+  good <- names(which(apply(pcx$x,1,function(x){sum(x^2/mv)}) <= cut))
+  if(plot.me == TRUE){
+    hist(sample.var, breaks=100)
+    boxplot(sample.var, horizontal=TRUE, col=col, add=TRUE)
+    abline(v=cut, lty=2)
+  }
+  return(list(sample.var=sample.var, bad=bad, good=good) )
+}
+
+# Convert phyloseq data to edgeR `DGEList` object
+#https://rdrr.io/github/yiluheihei/microbiomeMarker/man/phyloseq2edgeR.html
+phyloseq2edgeR <- function(ps, ...) {
+    if (!taxa_are_rows(ps)) {
+        ps <- t(ps)
+    }
+    abd <- as(otu_table(ps), "matrix")
+
+    if (any(round(abd) != abd)) {
+        warning(
+            "Some counts are non-integers, they are rounded to integers.\n",
+            "Raw count is recommended for reliable results for edger method.",
+            call. = FALSE
+        )
+    }
+
+    # tax_table: annotation information
+    taxa <- tax_table(ps, FALSE)
+    if (!is.null(taxa)) {
+        taxa <- data.frame(as(taxa, "matrix"))
+    }
+
+    # sample_data: information on each sample
+    samp <- sample_data(ps, FALSE)
+
+    dge <- edgeR::DGEList(
+        counts = abd,
+        samples = samp,
+        genes = taxa,
+        ...
+    )
+
+    dge
+}
+```
+
+## 18S analysis
+
+```{r load-pr2, warning=FALSE}
+sample.biom.pr2 <- paste0(devdir, "data/18s.emu.all_json_md.biom")
+sample.tree.pr2 <- paste0(devdir, "data/18s.emu.tree.nwk")
+biom.pr2 <- import_biom(sample.biom.pr2, treefilename = sample.tree.pr2)
+colnames(tax_table(biom.pr2)) <- c("Domain", "Subdivision", "Class", "Order", "Family", "Genus", "Species")
+sampleid.pr2 <- sample_names(biom.pr2)
+labels.biom.pr2 <- sample_data(biom.pr2)$Label
+```
+
+```{r explore-data-structure-pr2, warning=FALSE, results='markup'}
+rank_names(biom.pr2)
+sample_variables(biom.pr2)
+sample_names(biom.pr2)
+knitr::kable(as.matrix(sample_data(biom.pr2)))
+```
+
+```{r cleaning-annotation-names-pr2, echo=FALSE}
+tax <- data.frame(tax_table(biom.pr2))
+tax.clean <- data.frame(row.names = row.names(tax),
+                        Domain = str_replace(tax[,1], "d__", ""),
+                        Subdivision = str_replace(tax[,2], "p__", ""),
+                        Class = str_replace(tax[,3], "c__", ""),
+                        Order = str_replace(tax[,4], "o__", ""),
+                        Family = str_replace(tax[,5], "f__", ""),
+                        Genus = str_replace(tax[,6], "g__", ""),
+                        Species = str_replace(tax[,7], "s__", ""),
+                        stringsAsFactors = FALSE)
+tax_table(biom.pr2) <- as.matrix(tax.clean)
+biom.pr2 <- fix_duplicate_tax(biom.pr2)
+```
+
+
+### Preprocessing data
+
+*Subset eukaryotic microbes (18S)*
+```{r filter-data-pr2, warning=FALSE, results='markup'}
+#remove Mitochondria (Eukaryota:mito::kingdom level), Metazoa, Ichthyosporea, Choanoflagellata, and Fungi (all phylum level) 
+biom.filter.pr2 <- subset_taxa(biom.pr2, Domain!="Eukaryota:mito")
+biom.filter.pr2 <- subset_taxa(biom.filter.pr2, Subdivision!="Metazoa")
+biom.filter.pr2 <- subset_taxa(biom.filter.pr2, Subdivision!="Ichthyosporea")
+biom.filter.pr2 <- subset_taxa(biom.filter.pr2, Subdivision!="Choanoflagellata")
+biom.filter.pr2 <- subset_taxa(biom.filter.pr2, Subdivision!="Fungi")
+
+#get eukaryotes (18S)
+biom.18s <- subset_taxa(biom.filter.pr2, Domain=="Eukaryota")
+
+#remove 16s specific samples
+biom.18s <- prune_samples(!(sample_names(biom.18s)) %in% c("flaregas-1","flaregas-2","flaregas-3"), biom.18s)
+sampleid.18s <- sample_names(biom.18s)
+label.18s <- sample_data(biom.18s)$Label
+
+meta <- rownames_to_column(as.data.frame(as.matrix(biom.18s@sam_data))) %>% dplyr::rename("Sample"="rowname")
+
+##convert counts to integers for alpha diversity measures
+biom.18s.int <- biom.18s
+otu_table(biom.18s.int) <- otu_table(matrix(as.integer(otu_table(biom.18s)), ncol = nsamples(biom.18s), dimnames = list(taxa_names(biom.18s), sample_names(biom.18s))), taxa_are_rows = taxa_are_rows(biom.18s))
+```
+
+
+### Prevalence filtering
+
+Remove all taxa that only occur in a single sample
+
+```{r prevalence-filtering-18s, warning=FALSE, results='markup'}
+biom.18s
+#tax_stats(biom.18s)
+# Define prevalence of each taxa
+# (in how many samples did each taxa appear at least once)
+prev0 = apply(X = otu_table(biom.18s),
+              MARGIN = ifelse(taxa_are_rows(biom.18s), yes = 1, no = 2),
+              FUN = function(x){sum(x > 0)})
+prevdf = data.frame(Prevalence = prev0, TotalAbundance = taxa_sums(biom.18s), tax_table(biom.18s))
+ggplot(prevdf, aes(Prevalence)) + geom_bar()
+# Define prevalence threshold as 5% of total samples
+prevalenceThreshold = 0.05 * nsamples(biom.18s)
+prevalenceThreshold
+
+# Execute prevalence filter, using `prune_taxa()` function
+biom.18s = prune_taxa((prev0 > prevalenceThreshold), biom.18s)
+biom.18s
+#tax_stats(biom.18s)
+```
+
+
+### Normalization and transformation
+
+*Relative abundance*
+
+```{r relative-abundance, warning=FALSE, results='markup'}
+# Transform to relative abundance. Save as new object.
+biom.18s.rel <- biom.18s %>% transform_sample_counts(function(x) {x / sum(x)})
+#alternatively run: biom.18s.rel <- microbiome::transform(biom.18s, "compositional")
+
+# visualize relative abundance distribution
+d.rel.melt <- melt(otu_table(biom.18s.rel), id.vars = colnames(otu_table(biom.18s.rel))) %>% dplyr::rename("Sample" = "Var2", "Relative abundance" = "value")
+d.rel.melt <- inner_join(d.rel.melt, meta, by = "Sample")
+pdf(paste0(wdir,"fig/rel_abundance-distr-18s.pdf"), width = 14, height = 10)
+ggplot(d.rel.melt, aes(`Relative abundance`, Sample, fill=Inoculum)) + geom_boxplot(outliers = F) + coord_flip() + facet_wrap(~ Culture_setup, ncol = 2, scales = "free_x") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+dev.off()
+```
+
+<iframe width="100%" height="1000" style="border: 1px solid #464646;" allowfullscreen="" allow="autoplay" data-external="1" src="fig/rel_abundance-distr-18s.pdf"></iframe>
+
+*Centered log-ratio transformation*
+
+```{r clr-transformation, warning=FALSE, results='markup'}
+# load the library zCompositions to perform 0 replacement
+library(zCompositions)
+
+# we are using the Count Zero Multiplicative approach
+# z.warning	is threshold used to identify individual rows or columns including an excess of zeros/unobserved values
+d.n0 <- cmultRepl(otu_table(biom.18s), method="CZM", label=0, z.warning=0.99)
+dim(d.n0)
+
+# generate the centered log-ratio transformed data
+# samples by row
+d.clr <- apply(d.n0, 2, function(x) log(x) - mean(log(x)))
+biom.18s.clr <- biom.18s
+otu_table(biom.18s.clr) <- otu_table(d.clr, taxa_are_rows = TRUE)
+
+# check if microbiome::transform gives us the same
+#pseq.comp <- microbiome::transform(biom.18s, "clr")
+#d.clr.melt <- melt(otu_table(pseq.comp), id.vars = colnames(otu_table(pseq.comp))) %>% dplyr::rename("Sample" = "Var2", "clr" = "value")
+
+# visualize clr distribution
+d.clr.melt <- melt(otu_table(biom.18s.clr), id.vars = colnames(otu_table(biom.18s.clr))) %>% dplyr::rename("Sample" = "Var2", "clr" = "value")
+d.clr.melt <- inner_join(d.clr.melt, meta, by = "Sample")
+pdf(paste0(wdir,"fig/clr-distr-18s.pdf"), width = 14, height = 10)
+ggplot(d.clr.melt, aes(clr, Sample, fill=Inoculum)) + geom_boxplot(outliers = F) + coord_flip() + facet_wrap(~ Culture_setup, ncol = 2, scales = "free_x") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+dev.off()
+```
+
+<iframe width="100%" height="1000" style="border: 1px solid #464646;" allowfullscreen="" allow="autoplay" data-external="1" src="fig/clr-distr-18s.pdf"></iframe>
+
+
+### Most abundant genera
+
+Maximal relative abundances (>3%) for each Culture setup aggregated for each genus
+```{r genus-abundance-sorted, warning=FALSE, results='markup'}
+  temp.18s <- merge_samples(biom.18s, "Culture_setup") %>% tax_glom(taxrank = "Genus") %>% transform_sample_counts(function(x) {x / sum(x)}) %>% psmelt() %>% filter(Abundance>0.03) %>% arrange(Genus) %>% dplyr::arrange(desc(Abundance))
+  knitr::kable(as.matrix(temp.18s[,c(2,3,13:17)]))
+```
+
+
+### Community typing with Dirichlet Multinomial Mixtures
+
+```{r dirichlet-multinomial-mixture, warning=FALSE, results='markup'}
+set.seed(1)
+
+#https://microbiome.github.io/tutorials/DMM.html
+library(DirichletMultinomial)
+
+# prefilter relative abundances for prevalent taxa
+biom.18s.rel.genus <- biom.18s.rel %>% tax_glom(taxrank = "Genus")
+biom.18s.genus <- biom.18s %>% tax_glom(taxrank = "Genus")
+taxa <- core_members(biom.18s.rel.genus, detection = 1/200, prevalence = 2/27) #table(meta$Culture_setup) -> minimum no. samples of ocean~Hornbaek-deep: 6
+pseq <- prune_taxa(taxa, biom.18s.genus)
+dat <- abundances(pseq)
+#rownames(dat) <- paste(tax_table(pseq)[,"Genus"], tax_table(pseq)[,"Species"], sep = "::")
+rownames(dat) <- tax_table(pseq)[,"Genus"]
+count <- as.matrix(t(dat))
+
+# fit the DMM model
+fit <- lapply(1:7, dmn, count = count, verbose=TRUE, seed = 1234567)
+
+# Check model fit with different number of mixture components using standard information criteria
+lplc <- base::sapply(fit, DirichletMultinomial::laplace) # AIC / BIC / Laplace
+aic  <- base::sapply(fit, DirichletMultinomial::AIC) # AIC / BIC / Laplace
+bic  <- base::sapply(fit, DirichletMultinomial::BIC) # AIC / BIC / Laplace
+plot(lplc, type="b", xlab="Number of Dirichlet Components", ylab="Model Fit", ylim=c(min(c(lplc,aic,bic), na.rm = T), max(c(lplc,aic,bic), na.rm = T))); lines(aic, type="b", lty = 2); lines(bic, type="b", lty = 3)
+
+# pick the optimal model
+best <- fit[[which.min(unlist(lplc))]]
+
+# mixture parameters pi and theta
+mixturewt(best)
+
+# sample-component assignments
+ass <- apply(mixture(best), 1, which.max)
+temp.meta <- meta
+temp.meta$cluster <- ass
+knitr::kable(as.matrix(temp.meta %>% dplyr::select(Culture_setup, Inoculum, Time_point, cluster)))
+
+# Contribution of each taxonomic group to each component
+for (k in seq(ncol(fitted(best)))) {
+  d <- melt(fitted(best))
+  colnames(d) <- c("OTU", "cluster", "value")
+  d <- subset(d, cluster == k) %>%
+     # Arrange OTUs by assignment strength
+     arrange(value) %>%
+     mutate(OTU = factor(OTU, levels = unique(OTU))) %>%
+     # Only show the most important drivers
+     filter(abs(value) > quantile(abs(value), 0.8))     
+
+  p <- ggplot(d, aes(x = OTU, y = value)) +
+       geom_bar(stat = "identity") +
+       coord_flip() +
+       labs(title = paste("Top drivers: community type", k))
+  print(p)
+}
+```
+
+
+### Preprocess minimap2 abundancies
+
+Different statistical methods (alpha and beta diversity, DEA) require raw read counts instead of probabilities as calculated by Emu.
+
+```{r minimap2-preprocess, warning=FALSE, results='markup'}
+#get minimap2 filtered raw counts
+sample.biom <- paste0(devdir, "data/18s.minimap2.all_json_md.biom")
+sample.tree <- paste0(devdir, "data/18s.minimap2.tree.nwk")
+biom.m <- import_biom(sample.biom, treefilename = sample.tree)
+colnames(tax_table(biom.m)) <- c("Domain", "Supergroup", "Division", "Subdivision", "Class", "Order", "Family", "Genus", "Species")
+tax.m <- data.frame(tax_table(biom.m))
+tax.clean.m <- data.frame(row.names = row.names(tax.m),
+                        Domain = str_replace(tax.m[,1], "D_0__", ""),
+                        Supergroup = str_replace(tax.m[,2], "D_1__", ""),
+                        Division = str_replace(tax.m[,3], "D_2__", ""),
+                        Subdivision = str_replace(tax.m[,4], "D_3__", ""),
+                        Class = str_replace(tax.m[,5], "D_4__", ""),
+                        Order = str_replace(tax.m[,6], "D_5__", ""),
+                        Family = str_replace(tax.m[,7], "D_6__", ""),
+                        Genus = str_replace(tax.m[,8], "D_7__", ""),
+                        Species = str_replace(tax.m[,9], "D_8__", ""),
+                        stringsAsFactors = FALSE)
+tax_table(biom.m) <- as.matrix(tax.clean.m)
+biom.m <- fix_duplicate_tax(biom.m)
+
+#filter for eukaryotes
+biom.filter.pr2.m <- subset_taxa(biom.m, Domain!="Eukaryota:mito")
+biom.filter.pr2.m <- subset_taxa(biom.filter.pr2.m, Subdivision!="Metazoa")
+biom.filter.pr2.m <- subset_taxa(biom.filter.pr2.m, Subdivision!="Ichthyosporea")
+biom.filter.pr2.m <- subset_taxa(biom.filter.pr2.m, Subdivision!="Choanoflagellata")
+biom.filter.pr2.m <- subset_taxa(biom.filter.pr2.m, Subdivision!="Fungi")
+biom.18s.m <- subset_taxa(biom.filter.pr2.m, Domain=="Eukaryota")
+biom.18s.m <- prune_samples(!(sample_names(biom.18s.m)) %in% c("flaregas-1","flaregas-2","flaregas-3"), biom.18s.m)
+
+#preprocess phyloseq object
+biom.18s.m.unfiltered <- biom.18s.m
+prev0.m = apply(X = otu_table(biom.18s.m),
+              MARGIN = ifelse(taxa_are_rows(biom.18s.m), yes = 1, no = 2),
+              FUN = function(x){sum(x > 0)})
+prevdf.m = data.frame(Prevalence = prev0.m, TotalAbundance = taxa_sums(biom.18s.m), tax_table(biom.18s.m))
+ggplot(prevdf.m, aes(Prevalence)) + geom_bar()
+prevalenceThreshold.m = 0.05 * nsamples(biom.18s.m)
+biom.18s.m = prune_taxa((prev0.m > prevalenceThreshold.m), biom.18s.m)
+biom.18s.m
+#tax_stats(biom.18s.m)
+
+#centered log-ratio transformation
+d.n0 <- cmultRepl(otu_table(biom.18s.m), method="CZM", label=0, z.warning=0.99)
+dim(d.n0)
+d.clr <- apply(d.n0, 2, function(x) log(x) - mean(log(x)))
+biom.18s.m.clr <- biom.18s.m
+otu_table(biom.18s.m.clr) <- otu_table(d.clr, taxa_are_rows = TRUE)
+
+#transform to relative abundance
+biom.18s.m.rel <- biom.18s.m %>% transform_sample_counts(function(x) {x / sum(x)})
+
+#genus
+#get genus counts
+biom.18s.m.genus <- biom.18s.m %>% tax_glom(taxrank = "Genus")
+
+#filter genera that exist also running Emu on minimap2 counts
+biom.18s.genus.minimap2emu <- tax_table(biom.18s.m.genus) %>% as.data.frame() %>% dplyr::select(Genus) %>% rownames_to_column(var = "SpeciesID") %>% inner_join(tax_table(biom.18s.genus) %>% as.data.frame() %>% dplyr::select(Genus), by = "Genus")
+```
+
+
+### Alpha diversity measure 
+
+This should not be calculated with low abundancy removed counts (so here we should use minimap2 abundancies).
+
+* Observed .. counts up the number of different taxa you observe in a sample at a given taxonomic level
+* Chao0 .. species richness (similar to observed)
+* Shannon .. estimator for both species richness and evenness; higher means higher uncertainty of predicting which species you would see next if you were to look at another read from this sample
+* Simpson .. Gini-Simpson Index; similar idea to Shannon; based on the probability that two entities (microbes, or reads) taken from the sample at random are of different types
+
+**Sample richness in the different culture setups and different time points (emu)**
+
+```{r sample-richness-18s-culture-emu, warning=FALSE}
+#https://docs.onecodex.com/en/articles/4136553-alpha-diversity
+alpha_meas = c("Observed", "Chao1", "Shannon", "Simpson")
+
+p <- plot_richness(biom.18s.int, "Culture_setup", "Time_point", measures=alpha_meas)
+pdf(paste0(wdir, "fig/alpha-diversity-cultures-18s-emu.pdf"), width = 20)
+p + geom_boxplot(data=p$data, aes(x=Culture_setup, y=value, color=NULL), alpha=0.1)
+dev.off()
+#boxplot_alpha(biom.18s.int, index = "chao1", x_var = "Culture_setup") + theme_minimal() + theme(legend.position = "none")
+
+#https://microbiome.github.io/tutorials/Alphadiversity.html
+tab <-microbiome::alpha(biom.18s.int, index = "all")
+knitr::kable(as.matrix(tab))
+#show the dominant taxonomic group for each sample
+temp <- sample_data(biom.18s.int)
+temp$dominant <- tax_table(biom.18s.int)[dominant(biom.18s.int),"Species"]
+knitr::kable(as.matrix(temp[,c("Culture_setup","dominant")]))
+
+p <- plot_richness(biom.18s.int, "Time_point", "Culture_setup", measures=alpha_meas)
+p$data$Time_point <- factor(p$data$Time_point, levels = c("0","5","7","11","14"))
+pdf(paste0(wdir, "fig/alpha-diversity-times-18s-emu.pdf"), width = 20)
+p + geom_boxplot(data=p$data, aes(x=Time_point, y=value, color=NULL), alpha=0.1)
+dev.off()
+#boxplot_alpha(biom.18s.int, index = "chao1", x_var = "Time_point") + theme_minimal() + theme(legend.position = "none")
+```
+
+<iframe width="100%" height="510" style="border: 1px solid #464646;" allowfullscreen="" allow="autoplay" data-external="1" src="fig/alpha-diversity-cultures-18s-emu.pdf"></iframe>
+<iframe width="100%" height="510" style="border: 1px solid #464646;" allowfullscreen="" allow="autoplay" data-external="1" src="fig/alpha-diversity-times-18s-emu.pdf"></iframe>
+
+**Sample richness in the different culture setups and different time points (minimap2)**
+
+```{r sample-richness-18s-culture-minimap2, warning=FALSE}
+alpha_meas = c("Observed", "Chao1", "Shannon", "Simpson")
+
+p <- plot_richness(biom.18s.m.unfiltered, "Culture_setup", "Time_point", measures=alpha_meas)
+pdf(paste0(wdir, "fig/alpha-diversity-cultures-18s-minimap2.pdf"), width = 20)
+p + geom_boxplot(data=p$data, aes(x=Culture_setup, y=value, color=NULL), alpha=0.1)
+dev.off()
+#boxplot_alpha(biom.18s.m.unfiltered, index = "chao1", x_var = "Culture_setup") + theme_minimal() + theme(legend.position = "none")
+
+#https://microbiome.github.io/tutorials/Alphadiversity.html
+tab <-microbiome::alpha(biom.18s.m.unfiltered, index = "all")
+knitr::kable(as.matrix(tab))
+#show the dominant taxonomic group for each sample
+temp <- sample_data(biom.18s.m.unfiltered)
+temp$dominant <- tax_table(biom.18s.m.unfiltered)[dominant(biom.18s.m.unfiltered),"Species"]
+knitr::kable(as.matrix(temp[,c("Culture_setup","dominant")]))
+
+p <- plot_richness(biom.18s.m.unfiltered, "Time_point", "Culture_setup", measures=alpha_meas)
+p$data$Time_point <- factor(p$data$Time_point, levels = c("0","5","7","11","14"))
+pdf(paste0(wdir, "fig/alpha-diversity-times-18s-minimap2.pdf"), width = 20)
+p + geom_boxplot(data=p$data, aes(x=Time_point, y=value, color=NULL), alpha=0.1)
+dev.off()
+#boxplot_alpha(biom.18s.m.unfiltered, index = "chao1", x_var = "Time_point") + theme_minimal() + theme(legend.position = "none")
+```
+
+<iframe width="100%" height="510" style="border: 1px solid #464646;" allowfullscreen="" allow="autoplay" data-external="1" src="fig/alpha-diversity-cultures-18s-minimap2.pdf"></iframe>
+<iframe width="100%" height="510" style="border: 1px solid #464646;" allowfullscreen="" allow="autoplay" data-external="1" src="fig/alpha-diversity-times-18s-minimap2.pdf"></iframe>
+
+
+### Beta diversity measure
+
+This should not be calculated with low abundancy removed counts (so here we should use minimap2 abundancies).
+
+**PCA (emu)**
+
+```{r pca-18s-emu, warning=FALSE}
+# apply a singular value decomposition to the dataset
+# do not use princomp function in R!!
+pcx <- prcomp(t(otu_table(biom.18s.clr)), scale. = T)
+
+# generate a scree plot
+#http://www.sthda.com/english/articles/31-principal-component-methods-in-r-practical-guide/112-pca-principal-component-analysis-essentials/
+fviz_eig(pcx, addlabels = TRUE)
+
+# generate biplot (check https://colorbrewer2.org/ for selecting colors)
+pdf(paste0(wdir,"fig/clr-pca-18s-emu.pdf"), width = 30, height = 8)
+p1 <- ggbiplot(pcx, groups = meta$Culture_setup, var.axes = F, choices = c(1,2), obs.scale = 1, var.scale = 1, ellipse = T, circle = T, ellipse.fill = F, labels = meta$Label, labels.size = 5) + scale_color_brewer(type = "div", palette = 1) + labs(color = "Group")
+p2 <- ggbiplot(pcx, groups = meta$Culture_setup, var.axes = F, choices = c(3,4), obs.scale = 1, var.scale = 1, ellipse = T, circle = T, ellipse.fill = F, labels = meta$Label, labels.size = 5) + scale_color_brewer(type = "div", palette = 1) + labs(color = "Group")
+plot(ggarrange(p1, p2, ncol = 2, nrow = 1))
+dev.off()
+```
+
+<iframe width="100%" height="1000" style="border: 1px solid #464646;" allowfullscreen="" allow="autoplay" data-external="1" src="fig/clr-pca-18s-emu.pdf"></iframe>
+
+**PCA (minimap2)**
+
+```{r pca-18s-minimap2, warning=FALSE}
+#biplot
+pcx <- prcomp(t(otu_table(biom.18s.m.clr)), scale. = T)
+fviz_eig(pcx, addlabels = TRUE)
+# generate biplot (check https://colorbrewer2.org/ for selecting colors)
+p1 <- ggbiplot(pcx, groups = meta$Culture_setup, var.axes = F, choices = c(1,2), obs.scale = 1, var.scale = 1, ellipse = T, circle = T, ellipse.fill = F, labels = meta$Label, labels.size = 5) + scale_color_brewer(type = "div", palette = 1) + labs(color = "Group")
+p2 <- ggbiplot(pcx, groups = meta$Time_point, var.axes = F, choices = c(1,2), obs.scale = 1, var.scale = 1, ellipse = T, circle = T, ellipse.fill = F, labels = meta$Label, labels.size = 5) + scale_color_manual(values=c('#e41a1c','#377eb8','#4daf4a','#984ea3','#ff7f00')) + labs(color = "Group")
+pdf(paste0(wdir,"fig/clr-pca-18s-minimap2.pdf"), width = 30, height = 8)
+plot(ggarrange(p1, p2, ncol = 2, nrow = 1))
+dev.off()
+```
+
+<iframe width="100%" height="550" style="border: 1px solid #464646;" allowfullscreen="" allow="autoplay" data-external="1" src="fig/clr-pca-18s-minimap2.pdf"></iframe><br>
+
+
+### Hierarchical Clustering 
+
+**Unifrac (emu)**
+```{r hierarchical-clustering-18s-emu, warning=FALSE}
+# average-link clustering
+# Use unifrac on original compositional data: If your data is truly compositional (relative abundances sum to 1), consider using unifrac directly on the untransformed data
+biom.hclust <- hclust(phyloseq::distance(biom.18s, method = "unifrac"), method="average")
+biom.hclust$labels <- sample_data(biom.18s)$Label
+plot(biom.hclust)
+#biom.hclust <- hclust(phyloseq::distance(biom.18s, "wunifrac"), method="average")
+#biom.hclust$labels <- sample_data(biom.18s)$Label
+#plot(biom.hclust)
+#biom.hclust <- hclust(phyloseq::distance(biom.18s, "bray"), method="average")
+#biom.hclust$labels <- sample_data(biom.18s)$Label
+#plot(biom.hclust)
+```
+
+**Unifrac (minimap2)**
+```{r hierarchical-clustering-18s-minimap2, warning=FALSE}
+# average-link clustering
+# Use unifrac on original compositional data: If your data is truly compositional (relative abundances sum to 1), consider using unifrac directly on the untransformed data
+biom.hclust <- hclust(phyloseq::distance(biom.18s.m, method = "unifrac"), method="average")
+biom.hclust$labels <- sample_data(biom.18s)$Label
+plot(biom.hclust)
+```
+
+
+### Multivariate community comparison
+
+*PERMANOVA*
+
+This should not be calculated with low abundancy removed counts (so here we should use minimap2 abundancies).
+
+```{r permanova-test-minimap2, warning=FALSE, results='markup' }
+#https://microbiome.github.io/tutorials/PERMANOVA.html
+plot_landscape(biom.18s.m.rel, method = "NMDS", distance = "bray", col = "Culture_setup", size = 3)
+plot_landscape(biom.18s.m.rel, method = "NMDS", distance = "bray", col = "Time_point", size = 3)
+
+##https://deneflab.github.io/MicrobeMiseq/demos/mothur_2_phyloseq.html
+set.seed(1)
+
+# Calculate bray curtis distance matrix
+biom.18s.dist <- phyloseq::distance(biom.18s.m, method = "bray")
+#biom.18s.dist <- phyloseq::distance(biom.18s.m, method = "unifrac")
+#biom.18s.dist <- phyloseq::distance(biom.18s.m, method = "wunifrac")
+
+# make a data frame from the sample_data
+#sampledf <- data.frame(sample_data(biom.18s.m))
+sampledf <- meta(biom.18s.m)
+
+#test the hypothesis that the different culture setups have different centroids
+# Adonis test (H0 .. different cultures have the same centroid)
+perm <- adonis2(biom.18s.dist ~ Culture_setup, data = sampledf)
+perm
+# Homogeneity of dispersion test (H0 .. different cultures have the same dispersion)
+beta <- betadisper(biom.18s.dist, sampledf$Culture_setup)
+permutest(beta) #alternatively use anova(beta)
+
+#test the hypothesis that the different time points have different centroids
+# Adonis test (H0 .. different different time points have the same centroid)
+perm <- adonis2(biom.18s.dist ~ Time_point, data = sampledf)
+perm
+# Homogeneity of dispersion test (H0 .. different time points have the same dispersion)
+beta <- betadisper(biom.18s.dist, sampledf$Time_point)
+permutest(beta)
+```
+
+
+### Univariate community comparisons
+
+*ANOVA-like differential expression of genera (minimap2)*
+
+```{r raldex2-genus, warning=FALSE, results='markup'}
+set.seed(12345)
+# test differential expression: (light.clean_gas+light.used_gas) - dark.clean_gas
+meta.sub.1 <- meta %>% dplyr::filter(Culture_setup == "light+clean_gas" | Culture_setup == "light+used_gas" | Culture_setup == "dark+clean_gas") %>% mutate(Culture_setup = replace(Culture_setup, Culture_setup=="light+used_gas", "light+clean_gas"))
+mm <- model.matrix(~ Inoculum + Culture_setup, meta.sub.1)
+counts.sub <- otu_table(biom.18s.m.genus)[,meta.sub.1$Sample]
+x <- aldex.clr(counts.sub, mm, mc.samples=100, verbose=T, gamma=1e-3)
+glm.test <- aldex.glm(x, mm, fdr.method='BH')
+glm.eff<- aldex.glm.effect(x)
+
+aldex.glm.plot(glm.test, eff=glm.eff, contrast='Culture_setuplight+clean_gas', type='MW', test='effect', cutoff.effect = 1)
+aldex.glm.plot(glm.test, eff=glm.eff, contrast='Culture_setuplight+clean_gas', type='MA', test='effect', cutoff.effect = 1)
+#aldex.glm.plot(glm.test, eff=glm.eff, contrast='Culture_setuplight+clean_gas', type='volcano', test='effect', cutoff.effect = 1)
+
+#filter genera that where detected with Emu (filter low abundant genera)
+glm.eff.lightVSdark <- glm.eff$`Culture_setuplight+clean_gas`[biom.18s.genus.minimap2emu$SpeciesID,]
+glm.eff.lightVSdark <- glm.eff.lightVSdark %>% dplyr::filter(rab.all!="NA")
+
+# higher relative abundance under light     
+glm.eff.lightVSdark[glm.eff.lightVSdark$effect >= 1.5,] %>% nrow()
+knitr::kable(as.matrix(tax_table(biom.18s.m.genus)[glm.eff.lightVSdark[glm.eff.lightVSdark$effect >= 1.5,] %>% row.names(),]))
+# higher relative abundance in the dark
+glm.eff.lightVSdark[glm.eff.lightVSdark$effect <= -1.5,] %>% nrow()
+knitr::kable(as.matrix(tax_table(biom.18s.m.genus)[glm.eff.lightVSdark[glm.eff.lightVSdark$effect <= -1.5,] %>% row.names(),]))
+
+temp.1 <- glm.eff.lightVSdark[abs(glm.eff.lightVSdark$effect) >= 1.5,] %>% rownames_to_column(var = "SpeciesID")
+temp.2 <- tax_table(biom.18s.m.genus) %>% as.data.frame() %>% rownames_to_column(var = "SpeciesID")
+res_sig.aldex <- inner_join(temp.1, temp.2, by = "SpeciesID")
+pdf(paste0(wdir, "fig/aldex-light_clean_usedVSdark-scatter-genus-18s.pdf"), width = 35, height = 13)
+ggplot(res_sig.aldex, aes(x=Genus, y=diff.btw, color=Subdivision)) +
+    geom_jitter(size=3, width = 0.2) +
+    theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5)) + ylab("logFC")
+dev.off()
+
+for(i in glm.eff.lightVSdark[abs(glm.eff.lightVSdark$effect) >= 1,] %>% row.names()) {
+  de.genus <- tax_table(biom.18s.m.genus)[i,"Genus"]
+  p <- boxplot_abundance(biom.18s.m.genus, x = "Culture_setup", y = i) + scale_y_log10() + ggtitle(de.genus)
+  print(p)
+}
+```
+
+<iframe width="100%" height="550" style="border: 1px solid #464646;" allowfullscreen="" allow="autoplay" data-external="1" src="fig/aldex-light_clean_usedVSdark-scatter-genus-18s.pdf"></iframe>
+
+
+```{r raldex2-genus-oceanVSincubation, warning=FALSE, results='markup'}
+set.seed(12345)
+# test differential expression: ((light.clean_gas+light.used_gas) - ocean) AND (dark.clean_gas - ocean)
+meta.sub.1 <- meta %>% mutate(Culture_setup = replace(Culture_setup, Culture_setup=="light+used_gas", "light+clean_gas"))
+meta.sub.1$Culture_setup <- factor(meta.sub.1$Culture_setup, levels = c("ocean", "dark+clean_gas", "light+clean_gas"))
+mm <- model.matrix(~0 + Inoculum + Culture_setup, meta.sub.1)
+counts.sub <- otu_table(biom.18s.m.genus)[,meta.sub.1$Sample]
+x <- aldex.clr(counts.sub, mm, mc.samples=100, verbose=T, gamma=1e-3)
+glm.test.1 <- aldex.glm(x, mm, fdr.method='BH')
+glm.eff.1<- aldex.glm.effect(x)
+
+aldex.glm.plot(glm.test.1, eff=glm.eff.1, contrast='Culture_setuplight+clean_gas', type='MW', test='effect', cutoff.effect = 1.5)
+aldex.glm.plot(glm.test.1, eff=glm.eff.1, contrast='Culture_setuplight+clean_gas', type='MA', test='effect', cutoff.effect = 1.5)
+#aldex.glm.plot(glm.test.1, eff=glm.eff.1, contrast='Culture_setuplight+clean_gas', type='volcano', test='fdr', cutoff.pval = 0.1)
+aldex.glm.plot(glm.test.1, eff=glm.eff.1, contrast='Culture_setupdark+clean_gas', type='MW', test='effect', cutoff.effect = 1.5)
+aldex.glm.plot(glm.test.1, eff=glm.eff.1, contrast='Culture_setupdark+clean_gas', type='MA', test='effect', cutoff.effect = 1.5)
+#aldex.glm.plot(glm.test.1, eff=glm.eff.1, contrast='Culture_setupdark+clean_gas', type='volcano', test='fdr', cutoff.pval = 0.1)
+
+#filter genera that where detected with Emu (filter low abundant genera)
+glm.eff.lightVSocean <- glm.eff.1$`Culture_setuplight+clean_gas`[biom.18s.genus.minimap2emu$SpeciesID,]
+glm.eff.darkVSocean <- glm.eff.1$`Culture_setupdark+clean_gas`[biom.18s.genus.minimap2emu$SpeciesID,]
+
+# higher relative abundance in light-incubated cultures than in the ocean
+glm.eff.lightVSocean[glm.eff.lightVSocean$effect >= 1.5,] %>% nrow()
+knitr::kable(as.matrix(tax_table(biom.18s.m.genus)[glm.eff.lightVSocean[glm.eff.lightVSocean$effect >= 1.5,] %>% row.names(),]))
+# higher relative abundance in dark-incubated cultures than in the ocean
+glm.eff.darkVSocean[glm.eff.darkVSocean$effect >= 1.5,] %>% nrow()
+knitr::kable(as.matrix(tax_table(biom.18s.m.genus)[glm.eff.darkVSocean[glm.eff.darkVSocean$effect >= 1.5,] %>% row.names(),]))
+
+temp.1 <- glm.eff.lightVSocean[glm.eff.lightVSocean$effect >= 1.5,] %>% rownames_to_column(var = "SpeciesID")
+temp.2 <- tax_table(biom.18s.m.genus) %>% as.data.frame() %>% rownames_to_column(var = "SpeciesID")
+res_sig.aldex.lightVSocean <- inner_join(temp.1, temp.2, by = "SpeciesID")
+pdf(paste0(wdir, "fig/aldex-lightVSocean-scatter-genus-18s.pdf"), width = 35, height = 13)
+ggplot(res_sig.aldex.lightVSocean, aes(x=reorder(Genus, diff.btw), y=diff.btw, color=Subdivision)) +
+    geom_point(size=3, width = 0.2) + coord_flip() +
+    theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5)) + labs(y = "logFC", x = "Genus")
+dev.off()
+
+temp.1 <- glm.eff.darkVSocean[glm.eff.darkVSocean$effect >= 1.5, ] %>% rownames_to_column(var = "SpeciesID")
+temp.2 <- tax_table(biom.18s.m.genus) %>% as.data.frame() %>% rownames_to_column(var = "SpeciesID")
+res_sig.aldex.darkVSocean <- inner_join(temp.1, temp.2, by = "SpeciesID")
+pdf(paste0(wdir, "fig/aldex-darkVSocean-scatter-genus-18s.pdf"), width = 35, height = 13)
+ggplot(res_sig.aldex.darkVSocean, aes(x=reorder(Genus, diff.btw), y=diff.btw, color=Subdivision)) +
+    geom_point(size=3, width = 0.2) + coord_flip() +
+    theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5)) + labs(y = "logFC", x = "Genus")
+dev.off()
+```
+
+<iframe width="100%" height="550" style="border: 1px solid #464646;" allowfullscreen="" allow="autoplay" data-external="1" src="fig/aldex-lightVSocean-scatter-genus-18s.pdf"></iframe>
+<iframe width="100%" height="550" style="border: 1px solid #464646;" allowfullscreen="" allow="autoplay" data-external="1" src="fig/aldex-darkVSocean-scatter-genus-18s.pdf"></iframe>
+
+
+*Differential abundance testing of genera with DESeq2 (minimap2)*
+
+As DESeq2 expects raw counts we will use here the minimap2 counts instead of emu counts.
+
+```{r differential-abundance-deseq2-light_cleanVSdark_clean-genus, warning=FALSE, results='markup'}
+#run DESeq2
+#https://micca.readthedocs.io/en/latest/phyloseq.html
+sample_data(biom.18s.m.genus)$Culture_setup <- as.factor(sample_data(biom.18s.m.genus)$Culture_setup)
+ds <- phyloseq_to_deseq2(biom.18s.m.genus, ~ Inoculum + Culture_setup)
+ds <- DESeq(ds)
+alpha <- 0.001
+
+# test differential expression: light.clean_gas - dark.clean_gas
+res.1 <- results(ds, contrast=c("Culture_setup", "light+clean_gas", "dark+clean_gas"), alpha=alpha)
+summary(res.1)
+res.1 <- res.1[order(res.1$padj, na.last=NA), ]
+res_sig <- res.1[(res.1$padj < alpha), ]
+res_sig
+DESeq2::plotMA(res.1, alpha = alpha, ylim = c(-9,9))
+res.1 %>% as.data.frame %>% filter(padj<alpha) %>% summarize(up = sum(log2FoldChange>1), down = sum(log2FoldChange<1))
+# up down
+#1 9   22
+
+res_sig <- cbind(as(res_sig, "data.frame"), as(tax_table(biom.18s.m)[rownames(res_sig), ], "matrix"))
+pdf(paste0(wdir, "fig/deseq2-light_cleanVSdark_clean-scatter-genus-18s.pdf"), width = 15, height = 13)
+ggplot(res_sig, aes(x=Genus, y=log2FoldChange, color=Subdivision)) +
+    geom_jitter(size=3, width = 0.2) +
+    theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))
+dev.off()
+#View(cbind(as(res_sig, "data.frame"), as(otu_table(biom.18s.m)[rownames(res_sig), ], "matrix")))
+
+#volcano plot
+volDat <- as.data.frame(res.1)
+volDat <- volDat[!is.na(volDat$padj), ]
+volDat$DGE <- volDat$padj < alpha
+pdf(paste0(wdir, "fig/deseq2-light_cleanVSdark_clean-volcano-genus-18s.pdf"), width = 15, height = 13)
+ggplot(volDat, aes(x = log2FoldChange, y = -log10(padj), color = DGE)) + 
+  geom_point(alpha = 0.50) + 
+  scale_color_manual(values=c("TRUE" = "red", "FALSE" = "gray"))
+dev.off
+```
+
+<iframe width="100%" height="550" style="border: 1px solid #464646;" allowfullscreen="" allow="autoplay" data-external="1" src="fig/deseq2-light_cleanVSdark_clean-scatter-genus-18s.pdf"></iframe><br>
+<iframe width="100%" height="550" style="border: 1px solid #464646;" allowfullscreen="" allow="autoplay" data-external="1"
+src="fig/deseq2-light_cleanVSdark_clean-volcano-genus-18s.pdf"></iframe>
+
+```{r differential-abundance-deseq2-light_cleanVSlight_used-genus, warning=FALSE, results='markup'}
+#run DESeq2
+# test differential expression: light.clean_gas - light.used_gas
+res.2 <- results(ds, contrast=c("Culture_setup", "light+clean_gas", "light+used_gas"), alpha=alpha)
+summary(res.2)
+res.2 <- res.2[order(res.2$padj, na.last=NA), ]
+DESeq2::plotMA(res.2, alpha = alpha, ylim = c(-9,9))
+res.2 %>% as.data.frame %>% filter(padj<alpha) %>% summarize(up = sum(log2FoldChange>1), down = sum(log2FoldChange<1))
+#  up down
+#1  0    0
+```
+
+*Differential abundance testing of genera with edgeR (minimap2)*
+
+As edgeR expects raw counts we will use here the minimap2 counts instead of emu counts.
+
+```{r differential-abundance-edger-light_cleanVSdark_clean-genus, warning=FALSE, results='markup'}
+er <- phyloseq2edgeR(biom.18s.m.genus)
+#normalize
+er <- edgeR::calcNormFactors(er, method = "TMM")
+#metadata
+meta.sub <- as.data.frame(sample_data(biom.18s.m.genus)[,c(2,3,8)])
+meta.sub <- meta.sub %>% as_tibble() %>% mutate(across(.cols = 3, .fns = as.integer)) %>% mutate(across(.cols = 1:2, .fns = make.names))
+#estimate dispersion
+design <- model.matrix(~0 + Culture_setup + Inoculum, data=meta.sub)
+er <- edgeR::estimateDisp(er, design)
+plotBCV(er)
+#differential expression
+fit <- glmQLFit(er, design, robust = TRUE)
+plotQLDisp(fit)
+
+# test differential expression: light.clean_gas - dark.clean_gas
+qlf <- glmQLFTest(fit, contrast = c(-1,1,0,0,0,0))
+# create DGE table
+summary(decideTests(qlf,p.value=0.001)) #FDR<0.001
+#       -1*Culture_setupdark.clean_gas 1*Culture_setuplight.clean_gas
+#Down                                                              19
+#NotSig                                                           948
+#Up                                                                 2
+dge.1 <- topTags(qlf, n = Inf, p.value = 0.001)$table
+dge.1 %>% filter(FDR<0.001 & logFC > 1) %>% nrow()
+knitr::kable(as.matrix(dge.1 %>% filter(FDR<0.001 & logFC > 1) %>% dplyr::select(Genus, logCPM, logFC, FDR)))
+dge.1 %>% filter(FDR<0.001 & logFC < 1) %>% nrow()
+knitr::kable(as.matrix(dge.1 %>% filter(FDR<0.001 & logFC < 1) %>% dplyr::select(Genus, logCPM, logFC, FDR)))
+
+res_sig <- dge.1 %>% filter(FDR<0.001)
+pdf(paste0(wdir, "fig/edger-light_cleanVSdark_clean-scatter-genus-18s.pdf"), width = 15, height = 13)
+ggplot(res_sig, aes(x=Genus, y=logFC, color=Subdivision)) +
+    geom_jitter(size=3, width = 0.2) +
+    theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))
+dev.off()
+
+# test differential expression: (light.clean_gas + light.used_gas) - dark.clean_gas
+qlf <- glmQLFTest(fit, contrast = c(-1,1/2,1/2,0,0,0))
+# create DGE table
+summary(decideTests(qlf,p.value=0.001)) #FDR<0.001
+#       -1*Culture_setupdark.clean_gas 0.5*Culture_setuplight.clean_gas 0.5*Culture_setuplight.used_gas
+#Down                                                                                                24
+#NotSig                                                                                             943
+#Up                                                                                                   2
+dge.2 <- topTags(qlf, n = Inf, p.value = 0.001)$table
+dge.2 %>% filter(FDR<0.001 & logFC > 1) %>% nrow()
+knitr::kable(as.matrix(dge.2 %>% filter(FDR<0.001 & logFC > 1) %>% dplyr::select(Genus, logFC, FDR)))
+dge.2 %>% filter(FDR<0.001 & logFC < 1) %>% nrow()
+knitr::kable(as.matrix(dge.2 %>% filter(FDR<0.001 & logFC < 1) %>% dplyr::select(Genus, logFC, FDR)))
+  
+pdf(paste0(wdir, "fig/edger-light_clean_usedVSdark_clean-scatter-genus-18s.pdf"), width = 15, height = 13)
+ggplot(dge.2, aes(x=Genus, y=logFC, color=Subdivision)) +
+    geom_jitter(size=3, width = 0.2) +
+    theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))
+dev.off()
+```
+
+<iframe width="100%" height="550" style="border: 1px solid #464646;" allowfullscreen="" allow="autoplay" data-external="1" src="fig/edger-light_cleanVSdark_clean-scatter-genus-18s.pdf"></iframe>
+<iframe width="100%" height="550" style="border: 1px solid #464646;" allowfullscreen="" allow="autoplay" data-external="1" src="fig/edger-light_clean_usedVSdark_clean-scatter-genus-18s.pdf"></iframe>
+
+```{r differential-abundance-edger-light_cleanVSlight_used-genus, warning=FALSE, results='markup'}
+# test differential expression: light.clean_gas - light.used_gas
+qlf <- glmQLFTest(fit, contrast = c(0,1,-1,0,0,0))
+# create DGE table
+summary(decideTests(qlf,p.value=0.01)) #FDR<0.01
+#       1*Culture_setuplight.clean_gas -1*Culture_setuplight.used_gas
+#Down                                                               0
+#NotSig                                                           969
+#Up                                                                 0
+```
+
+```{r differential-abundance-edger-oceanVSinoculum-genus, warning=FALSE, results='markup'}
+# test differential expression: ocean - (light.clean_gas + light.used_gas + dark.clean_gas)/3
+qlf <- glmQLFTest(fit, contrast = c(-1/3,-1/3,-1/3,1,0,0))
+# create DGE table
+summary(decideTests(qlf,p.value=0.001)) #FDR<0.001
+#       -0.333333333333333*Culture_setupdark.clean_gas -0.333333333333333*Culture_setuplight.clean_gas -0.333333333333333*Culture_setuplight.used_gas 1*Culture_setupocean
+#Down                                                               28
+#NotSig                                                            802
+#Up                                                                139
+dge.3 <- topTags(qlf, n = Inf, p.value = 0.001)$table
+dge.3 %>% filter(FDR<0.001 & logFC > 1) %>% nrow()
+knitr::kable(as.matrix(dge.3 %>% filter(FDR<0.001 & logFC > 1) %>% dplyr::select(Genus, logFC, FDR)))
+dge.3 %>% filter(FDR<0.001 & logFC < 1) %>% nrow()
+knitr::kable(as.matrix(dge.3 %>% filter(FDR<0.001 & logFC < 1) %>% dplyr::select(Genus, logFC, FDR)))
+
+res_sig <- dge.3 %>% filter(FDR<0.001)
+pdf(paste0(wdir, "fig/edger-oceanVSinoculum-scatter-genus-18s.pdf"), width = 15, height = 13)
+ggplot(res_sig, aes(x=Genus, y=logFC, color=Subdivision)) +
+    geom_jitter(size=3, width = 0.2) +
+    theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))
+dev.off()
+```
+
+<iframe width="100%" height="550" style="border: 1px solid #464646;" allowfullscreen="" allow="autoplay" data-external="1" src="fig/edger-oceanVSinoculum-scatter-genus-18s.pdf"></iframe><br>
+
+*Linear time course trends under light of genera with edgeR (minimap2)*
+
+```{r time-course-trend-light-edger-genus, warning=FALSE, results='markup'}
+# time course trend analysis
+library(splines)
+meta.light <- meta.sub %>% filter(Culture_setup == "light.clean_gas" | Culture_setup == "light.used_gas" | Culture_setup == "ocean") %>% filter(Inoculum != "Hornbaek.shallow")
+X <- ns(meta.light$Time_point, df=1)
+design.light <- model.matrix(~X + Inoculum, data=meta.light)
+biom.18s.m.light <- prune_samples(sample_names(biom.18s.m.genus) %in% c("flaregas-4","flaregas-5","flaregas-6","flaregas-7","flaregas-8","flaregas-9","flaregas-10","flaregas-11","flaregas-12","flaregas-13","flaregas-14","flaregas-15","flaregas-16","flaregas-17","flaregas-18","flaregas-19","flaregas-20"), biom.18s.m.genus)
+er <- phyloseq2edgeR(biom.18s.m.light)
+er <- edgeR::calcNormFactors(er, method = "TMM")
+er <- edgeR::estimateDisp(er, design.light)
+plotBCV(er)
+sqrt(er$common.dispersion)
+fit <- glmQLFit(er, design.light, robust = TRUE)
+plotQLDisp(fit)
+qlf <- glmQLFTest(fit, coef=2)
+summary(decideTests(qlf, p.value=0.01))
+#          X
+#Down    138
+#NotSig  798
+#Up       33
+
+#filter genera that where detected with Emu (filter low abundant genera)
+dge.4 <- topTags(qlf, n = Inf, p.value = 1)$table
+dge.4 <- dge.4[biom.18s.genus.minimap2emu$SpeciesID,]
+
+# visualize the fitted spline curves for the top four enriched species under cultivation conditions
+dge.4.u <- dge.4 %>% filter(FDR<0.01 & logFC > 1)
+dge.4.u %>% nrow()
+logCPM.obs <- cpm(er, log=TRUE, prior.count=qlf$prior.count)
+logCPM.fit <- cpm(qlf, log=TRUE)
+pdf(paste0(wdir, "fig/edger-time-course-light-genus-18s-1.pdf"), width = 15, height = 15)
+par(mfrow=c(2,6))
+for(i in 1:nrow(dge.4.u)) {
+ FlybaseID <- row.names(dge.4.u)[i]
+ Symbol <- dge.4.u$Genus[i]
+ logCPM.obs.i <- logCPM.obs[FlybaseID,]
+ logCPM.fit.i <- logCPM.fit[FlybaseID,]
+ plot(meta.light$Time_point, logCPM.obs.i, ylab="log-CPM", xlab="Time point", main=Symbol, pch=16)
+ lines(meta.light$Time_point, logCPM.fit.i, col="red", lwd=2)
+}
+dev.off()
+```
+
+<iframe width="100%" height="550" style="border: 1px solid #464646;" allowfullscreen="" allow="autoplay" data-external="1" src="fig/edger-time-course-light-genus-18s-1.pdf"></iframe>
+
+*Linear time course trends in the dark of genera with edgeR (minimap2)*
+
+```{r time-course-trend-dark-edger-genus, warning=FALSE, results='markup'}
+# time course trend analysis
+library(splines)
+meta.dark <- meta.sub %>% filter(Culture_setup == "dark.clean_gas" | Culture_setup == "ocean") %>% filter(Inoculum != "Helsingor")
+X <- ns(meta.dark$Time_point, df=1)
+design.dark <- model.matrix(~X + Inoculum, data=meta.dark)
+biom.18s.m.dark <- prune_samples(sample_names(biom.18s.m.genus) %in% c("flaregas-11","flaregas-12","flaregas-21","flaregas-22","flaregas-23","flaregas-24","flaregas-25","flaregas-26","flaregas-27","flaregas-28","flaregas-29","flaregas-30"), biom.18s.m.genus)
+er <- phyloseq2edgeR(biom.18s.m.dark)
+er <- edgeR::calcNormFactors(er, method = "TMM")
+er <- edgeR::estimateDisp(er, design.dark)
+plotBCV(er)
+sqrt(er$common.dispersion)
+fit <- glmQLFit(er, design.dark, robust = TRUE)
+plotQLDisp(fit)
+qlf <- glmQLFTest(fit, coef=2)
+summary(decideTests(qlf, p.value=0.01))
+#         X
+#Down     4
+#NotSig 942
+#Up      23
+
+#filter genera that where detected with Emu (filter low abundant genera)
+dge.5 <- topTags(qlf, n = Inf, p.value = 1)$table
+dge.5 <- dge.5[biom.18s.genus.minimap2emu$SpeciesID,]
+
+
+# visualize the fitted spline curves for the top four enriched species under cultivation conditions
+dge.5.u <- dge.5 %>% filter(FDR<0.01 & logFC > 1)
+dge.5.u %>% nrow()
+logCPM.obs <- cpm(er, log=TRUE, prior.count=qlf$prior.count)
+logCPM.fit <- cpm(qlf, log=TRUE)
+pdf(paste0(wdir, "fig/edger-time-course-dark-genus-18s-up-1.pdf"), width = 15, height = 15)
+par(mfrow=c(3,5))
+for(i in 1:15) {
+ FlybaseID <- row.names(dge.5.u)[i]
+ Symbol <- dge.5.u$Genus[i]
+ logCPM.obs.i <- logCPM.obs[FlybaseID,]
+ logCPM.fit.i <- logCPM.fit[FlybaseID,]
+ plot(meta.dark$Time_point, logCPM.obs.i, ylab="log-CPM", xlab="Time point", main=Symbol, pch=16)
+ lines(meta.dark$Time_point, logCPM.fit.i, col="red", lwd=2)
+}
+dev.off()
+pdf(paste0(wdir, "fig/edger-time-course-dark-genus-18s-up-2.pdf"), width = 15, height = 15)
+par(mfrow=c(2,5))
+for(i in 16:nrow(dge.5.u)) {
+ FlybaseID <- row.names(dge.5.u)[i]
+ Symbol <- dge.5.u$Genus[i]
+ logCPM.obs.i <- logCPM.obs[FlybaseID,]
+ logCPM.fit.i <- logCPM.fit[FlybaseID,]
+ plot(meta.dark$Time_point, logCPM.obs.i, ylab="log-CPM", xlab="Time point", main=Symbol, pch=16)
+ lines(meta.dark$Time_point, logCPM.fit.i, col="red", lwd=2)
+}
+dev.off()
+```
+
+<iframe width="100%" height="550" style="border: 1px solid #464646;" allowfullscreen="" allow="autoplay" data-external="1" src="fig/edger-time-course-dark-genus-18s-up-1.pdf"></iframe><br>
+<iframe width="100%" height="550" style="border: 1px solid #464646;" allowfullscreen="" allow="autoplay" data-external="1" src="fig/edger-time-course-dark-genus-18s-up-2.pdf"></iframe>
+
+
+*Compare results of DESeq2 and edgeR on genus level*
+
+```{r differential-abundance-comparison-genus, warning=FALSE, results='markup'}
+alpha <- 0.001
+# test differential expression: light.clean_gas - dark.clean_gas
+gene_list <- list(
+  DESeq2 = res.1 %>% as.data.frame %>% dplyr::filter(padj < alpha & log2FoldChange<1) %>% rownames,
+  edgeR = dge.1 %>% dplyr::filter(FDR < alpha & logFC<1) %>% rownames
+)
+#venn.diagram(x = gene_list, filename = "venn.light-cleanVSdark-clean.down.tiff")
+p.a <- venn(gene_list)
+gene_list <- list(
+  DESeq2 = res.1 %>% as.data.frame %>% dplyr::filter(padj < alpha & log2FoldChange>1) %>% rownames,
+  edgeR = dge.1 %>% dplyr::filter(FDR < alpha & logFC>1) %>% rownames
+)
+p.b <- venn(gene_list)
+```
+
+*Compare light_clean_usedVSdark results of ALDEX and edgeR on genus level*
+
+```{r differential-abundance-comparison-genus-2, warning=FALSE}
+alpha <- 0.001
+# test differential expression: (light.clean_gas + light.used_gas) - dark.clean_gas
+gene_list <- list(
+  aldex = glm.eff.lightVSdark[glm.eff.lightVSdark$effect >= 1,] %>% row.names(), 
+  edgeR = dge.2 %>% filter(FDR < alpha & logFC > 1) %>% rownames
+)
+p.a <- venn(gene_list)
+knitr::kable(as.matrix(tax_table(biom.18s.m.genus)[attr(p.a,"intersections")$aldex,]))
+gene_list <- list(
+  aldex = glm.eff.lightVSdark[glm.eff.lightVSdark$effect <= -1,] %>% row.names(), 
+  edgeR = dge.2 %>% filter(FDR < alpha & logFC < 1) %>% rownames
+)
+p.a <- venn(gene_list)
+knitr::kable(as.matrix(tax_table(biom.18s.m.genus)[attr(p.a,"intersections")$aldex,]))
+```
+
+*Compare results of ocean VS inoculum and time course tends in edgeR on genus level*
+
+```{r edger-tests-comparison-genus, warning=FALSE, results='markup'}
+alpha <- 0.001
+# test differential expression: ocean - (light.clean_gas + light.used_gas + dark.clean_gas)/3
+#light
+gene_list <- list(
+  edgeR.contrast = dge.3 %>% filter(FDR < alpha & logFC > 1) %>% rownames,
+  edgeR.splines = dge.4 %>% filter(FDR < alpha & logFC < 1) %>% rownames
+)
+p.a <- venn(gene_list)
+gene_list <- list(
+  edgeR.contrast = dge.3 %>% filter(FDR < alpha & logFC < 1) %>% rownames,
+  edgeR.splines = dge.4 %>% filter(FDR < alpha & logFC > 1) %>% rownames
+)
+p.b <- venn(gene_list)
+
+#dark
+gene_list <- list(
+  edgeR.contrast = dge.3 %>% filter(FDR < alpha & logFC > 1) %>% rownames,
+  edgeR.splines = dge.5 %>% filter(FDR < alpha & logFC < 1) %>% rownames
+)
+p.c <- venn(gene_list)
+gene_list <- list(
+  edgeR.contrast = dge.3 %>% filter(FDR < alpha & logFC < 1) %>% rownames,
+  edgeR.splines = dge.5 %>% filter(FDR < alpha & logFC > 1) %>% rownames
+)
+p.d <- venn(gene_list)
+```
+
+
+### Network construction and characterization
+
+*Semi-Parametric Rank-based approach for INference in Graphical model (SPRING)*
+
+```{r network-construction-spring, warning=FALSE, results='markup'}
+#https://github.com/stefpeschel/NetCoMi
+library(NetCoMi)
+net_spring <- netConstruct(biom.18s,
+                           filtTax = "highestFreq",
+                           filtTaxPar = list(highestFreq = 50),
+                           measure = "spring",
+                           measurePar = list(nlambda=50, 
+                                             rep.num=50,
+                                             Rmethod = "approx"),
+                           normMethod = "none", 
+                           zeroMethod = "none",
+                           sparsMethod = "none", 
+                           dissFunc = "signed",
+                           verbose = 3,
+                           seed = 123456)
+#Adjacency values computed using the "signed" transformation (values different from 0 and 1 will be edges in the network):
+hist(net_spring$assoMat1, 100, xlim = c(-1, 1), ylim = c(0, 400),
+     xlab = "Estimated correlation", 
+     main = "Estimated correlations after sparsification")
+
+net_spring_unsigned <- netConstruct(data = net_spring$assoEst1,
+                           dataType = "correlation",
+                           sparsMethod = "threshold",
+                           dissFunc = "unsigned",
+                           verbose = 3)
+#Adjacency values computed using the "unsigned" transformation:
+hist(net_spring_unsigned$adjaMat1, 100, ylim = c(0, 400),
+     xlab = "Adjacency values", 
+     main = "Adjacencies (with \"unsigned\" transformation)")
+```
+
+```{r network-analysis-spring, warning=FALSE, results='markup'}
+temp.nw <- net_spring
+props_spring <- netAnalyze(temp.nw, 
+                           centrLCC = TRUE,
+                           clustMethod = "cluster_fast_greedy",
+                           hubPar = "eigenvector",
+                           weightDeg = FALSE, normDeg = FALSE)
+
+#?summary.microNetProps
+print(summary(props_spring, numbNodes = 5L))
+```
+
+```{r visualize-network-spring, warning=FALSE, results='markup'}
+pdf(paste0(wdir, "fig/network-spring-18s.pdf"), width = 30, height = 15)
+p <- plot(props_spring,
+          edgeInvisFilter = "threshold",
+          edgeInvisPar = 0.01,
+          nodeColor = "cluster",
+          nodeSize = "eigenvector",
+          repulsion = 0.8,
+          rmSingles = TRUE,
+          labelScale = FALSE,
+          cexLabels = 1.6,
+          nodeSizeSpread = 3,
+          cexNodes = 2,
+          hubBorderCol = "darkgray",
+          title1 = "Network on species level with SPRING associations",
+          showTitle = TRUE,
+          cexTitle = 2.3)
+legend(0.57, 1.1, cex = 2.2, title = "estimated association:",
+       legend = c("+","-"), lty = 1, lwd = 3, col = c("#009900","red"), 
+       bty = "n", horiz = FALSE)
+dev.off()
+
+#different transparency value is added to edges with an absolute weight below and above the `cut` value
+print(p$q1$Arguments$cut)
+```
+
+<iframe width="100%" height="550" style="border: 1px solid #464646;" allowfullscreen="" allow="autoplay" data-external="1" src="fig/network-spring-18s.pdf"></iframe>
+
+```{r network-construction-genus-spring, warning=FALSE, results='markup'}
+biom.18s.genus.top50 <- prune_taxa(names(sort(taxa_sums(biom.18s.genus), decreasing = TRUE)[1:50]), biom.18s.genus)
+tax_table(biom.18s.genus.top50) <- tax_table(biom.18s.genus.top50) %>% as.data.frame() %>% mutate(Genus = str_remove(Genus, "_X*$")) %>% as.matrix()
+net_spring_genus <- netConstruct(biom.18s.genus.top50,
+                           #filtTax = "highestFreq",
+                           #filtTaxPar = list(highestFreq = 50),
+                           taxRank = "Genus",
+                           measure = "spring",
+                           measurePar = list(nlambda=50, 
+                                             rep.num=50,
+                                             Rmethod = "approx"),
+                           normMethod = "none", 
+                           zeroMethod = "none",
+                           sparsMethod = "none", 
+                           dissFunc = "signed",
+                           verbose = 3,
+                           seed = 123456)
+#Adjacency values computed using the "signed" transformation (values different from 0 and 1 will be edges in the network):
+hist(net_spring_genus$assoMat1, 100, xlim = c(-1, 1), ylim = c(0, 400),
+     xlab = "Estimated correlation", 
+     main = "Estimated correlations after sparsification")
+
+net_spring_genus_unsigned <- netConstruct(data = net_spring_genus$assoEst1,
+                           dataType = "correlation",
+                           sparsMethod = "threshold",
+                           thresh = 0.3,
+                           dissFunc = "unsigned",
+                           verbose = 3)
+#Adjacency values computed using the "unsigned" transformation:
+hist(net_spring_genus_unsigned$adjaMat1, 100, ylim = c(0, 400),
+     xlab = "Adjacency values", 
+     main = "Adjacencies (with \"unsigned\" transformation)")
+```
+
+```{r network-analysis-genus-spring, warning=FALSE, results='markup'}
+temp.nw <- net_spring_genus
+props_spring_genus <- netAnalyze(temp.nw, 
+                           centrLCC = TRUE,
+                           clustMethod = "cluster_fast_greedy",
+                           #hubPar = "eigenvector",
+                           hubPar = "betweenness",
+                           hubQuant = 0.9,
+                           weightDeg = FALSE, normDeg = FALSE)
+
+#?summary.microNetProps
+print(summary(props_spring_genus, numbNodes = 5L))
+```
+
+```{r visualize-network-genus-spring, warning=FALSE, results='markup'}
+pdf(paste0(wdir, "fig/network-spring-genus-18s.pdf"), width = 30, height = 15)
+p <- plot(props_spring_genus,
+          edgeInvisFilter = "threshold",
+          edgeInvisPar = 0.01,
+          nodeColor = "cluster",
+          colorVec =  c("#E69F00", "#56B4E9", "#4daf4a", "#009960", "#CC79A7", "#804000", "#999999"),
+          nodeSize = "eigenvector",
+          repulsion = 0.8,
+          rmSingles = TRUE,
+          labelScale = FALSE,
+          cexLabels = 2.4,
+          nodeSizeSpread = 3,
+          cexNodes = 2,
+          hubBorderCol = "darkgray",
+          #title1 = "Network on species level with SPRING associations",
+          showTitle = FALSE,
+          #cexTitle = 2.3,
+          posCol = "#0072B2",
+          negCol = '#e41a1c')
+legend(0.75, 1.1, cex = 2.4, title = "estimated association:",
+       legend = c("+","-"), lty = 1, lwd = 3, col = c("#0072B2", '#e41a1c'), 
+       bty = "n", horiz = FALSE)
+dev.off()
+#different transparency value is added to edges with an absolute weight below and above the `cut` value
+print(p$q1$Arguments$cut)
+
+knitr::kable(as.matrix(sort(colSums(net_spring_genus$normCounts1), decreasing = TRUE)[1:20]))
+```
+
+<iframe width="100%" height="550" style="border: 1px solid #464646;" allowfullscreen="" allow="autoplay" data-external="1" src="fig/network-spring-genus-18s.pdf"></iframe>
+
+
+*SPRING for time point 11 hours*
+
+```{r network-construction-genus-spring-11hr, warning=FALSE}
+#https://github.com/stefpeschel/NetCoMi
+library(NetCoMi)
+biom.18s.genus.top50.11hr <- prune_samples(sample_data(biom.18s.genus.top50) %>% as.data.frame() %>% as.matrix() %>% as.data.frame() %>% filter(Time_point == 11) %>% rownames(), biom.18s.genus.top50)
+
+net_spring_genus.11 <- netConstruct(biom.18s.genus.top50.11hr,
+                           #filtTax = "highestFreq",
+                           #filtTaxPar = list(highestFreq = 50),
+                           taxRank = "Genus",
+                           measure = "spring",
+                           measurePar = list(nlambda=50, 
+                                             rep.num=50,
+                                             Rmethod = "approx"),
+                           normMethod = "none", 
+                           zeroMethod = "none",
+                           sparsMethod = "none", 
+                           dissFunc = "signed",
+                           verbose = 3,
+                           seed = 123456)
+#Adjacency values computed using the "signed" transformation (values different from 0 and 1 will be edges in the network):
+hist(net_spring_genus.11$assoMat1, 100, xlim = c(-1, 1), ylim = c(0, 400),
+     xlab = "Estimated correlation", 
+     main = "Estimated correlations after sparsification")
+```
+
+```{r network-analysis-genus-spring-11hr, warning=FALSE, results='markup'}
+temp.nw <- net_spring_genus.11
+props_spring_genus.11 <- netAnalyze(temp.nw, 
+                           centrLCC = TRUE,
+                           clustMethod = "cluster_fast_greedy",
+                           hubPar = "eigenvector",
+                           weightDeg = FALSE, normDeg = FALSE)
+
+#?summary.microNetProps
+print(summary(props_spring_genus.11, numbNodes = 5L))
+```
+
+```{r visualize-network-genus-spring-11hr, warning=FALSE, results='markup'}
+pdf(paste0(wdir, "fig/network-spring-genus-11hr-18s.pdf"), width = 30, height = 15)
+p <- plot(props_spring_genus.11,
+          edgeInvisFilter = "threshold",
+          edgeInvisPar = 0.01,
+          nodeColor = "cluster",
+          colorVec =  c("#804000", "#56B4E9", "#009960", "#999999", "#357090", "#CC79A7", "#E69F00"),
+          nodeSize = "eigenvector",
+          repulsion = 0.8,
+          rmSingles = TRUE,
+          labelScale = FALSE,
+          cexLabels = 1.6,
+          nodeSizeSpread = 3,
+          cexNodes = 2,
+          hubBorderCol = "darkgray",
+          #title1 = "Network on genus level with Pearson correlations",
+          showTitle = FALSE,
+          #cexTitle = 2.3,
+          posCol = "#0072B2",
+          negCol = '#e41a1c')
+legend(0.75, 1.1, cex = 2.2, title = "estimated association:",
+       legend = c("+","-"), lty = 1, lwd = 3, col = c("#0072B2", '#e41a1c'), 
+       bty = "n", horiz = FALSE)
+dev.off()
+#different transparency value is added to edges with an absolute weight below and above the `cut` value
+print(p$q1$Arguments$cut)
+
+knitr::kable(as.matrix(sort(colSums(net_spring_genus.11$normCounts1), decreasing = TRUE)[1:20]))
+```
+
+<iframe width="100%" height="550" style="border: 1px solid #464646;" allowfullscreen="" allow="autoplay" data-external="1" src="fig/network-spring-genus-11hr-18s.pdf"></iframe>
+
+
+*Pearson's correlation*
+
+```{r network-construction-pearson, warning=FALSE, results='markup'}
+#While with the “signed” transformation, positive correlated taxa are likely to belong to the same cluster, with the “unsigned” transformation clusters contain strongly positive and negative correlated taxa.
+net_pears <- netConstruct(biom.18s,  
+                          filtTax = "highestFreq",
+                          filtTaxPar = list(highestFreq = 50),
+                          measure = "pearson",
+                          normMethod = "clr",
+                          zeroMethod = "multRepl",
+                          sparsMethod = "threshold",
+                          thresh = 0.3,
+                          dissFunc = "signed",
+                          verbose = 3)
+#Adjacency values computed using the "signed" transformation (values different from 0 and 1 will be edges in the network):
+hist(net_pears$assoMat1, 100, xlim = c(-1, 1), ylim = c(0, 400),
+     xlab = "Estimated correlation", 
+     main = "Estimated correlations after sparsification")
+
+net_pears_unsigned <- netConstruct(data = net_pears$assoEst1,
+                           dataType = "correlation",
+                           sparsMethod = "threshold",
+                           thresh = 0.3,
+                           dissFunc = "unsigned",
+                           verbose = 3)
+#Adjacency values computed using the "unsigned" transformation:
+hist(net_pears_unsigned$adjaMat1, 100, ylim = c(0, 400),
+     xlab = "Adjacency values", 
+     main = "Adjacencies (with \"unsigned\" transformation)")
+```
+
+```{r network-analysis-pearson, warning=FALSE, results='markup'}
+temp.nw <- net_pears
+props_pears <- netAnalyze(temp.nw, 
+                           centrLCC = TRUE,
+                           clustMethod = "cluster_fast_greedy",
+                           hubPar = "eigenvector",
+                           weightDeg = FALSE, normDeg = FALSE
+                          )
+
+#?summary.microNetProps
+print(summary(props_pears, numbNodes = 5L))
+```
+
+```{r visualize-network-pearson, warning=FALSE, results='markup'}
+pdf(paste0(wdir, "fig/network-pearson-18s.pdf"), width = 30, height = 15)
+p <- plot(props_pears,
+          edgeInvisFilter = "threshold",
+          edgeInvisPar = 0.001,
+          nodeColor = "cluster",
+          nodeSize = "eigenvector",
+          repulsion = 0.8,
+          rmSingles = TRUE,
+          labelScale = FALSE,
+          cexLabels = 1.6,
+          nodeSizeSpread = 3,
+          cexNodes = 2,
+          hubBorderCol = "darkgray",
+          title1 = "Network on species level with Pearson correlations",
+          showTitle = TRUE,
+          cexTitle = 2.3)
+legend(0.57, 1.1, cex = 2.2, title = "estimated association:",
+       legend = c("+","-"), lty = 1, lwd = 3, col = c("#009900","red"), 
+       bty = "n", horiz = FALSE)
+dev.off()
+
+#different transparency value is added to edges with an absolute weight below and above the `cut` value
+print(p$q1$Arguments$cut)
+```
+
+<iframe width="100%" height="550" style="border: 1px solid #464646;" allowfullscreen="" allow="autoplay" data-external="1" src="fig/network-pearson-18s.pdf"></iframe>
+
+```{r network-construction-genus-pearson, warning=FALSE, results='markup'}
+biom.18s.genus.top50 <- prune_taxa(names(sort(taxa_sums(biom.18s.genus), decreasing = TRUE)[1:50]), biom.18s.genus)
+tax_table(biom.18s.genus.top50) <- tax_table(biom.18s.genus.top50) %>% as.data.frame() %>% mutate(Genus = str_remove(Genus, "_X*$")) %>% as.matrix()
+net_pears_genus <- netConstruct(biom.18s.genus.top50,
+                          taxRank = "Genus",
+                          measure = "pearson",
+                          zeroMethod = "multRepl",
+                          normMethod = "clr",
+                          sparsMethod = "threshold",
+                          thresh = 0.3,
+                          verbose = 3)
+#Adjacency values computed using the "signed" transformation (values different from 0 and 1 will be edges in the network):
+hist(net_pears_genus$assoMat1, 100, xlim = c(-1, 1), ylim = c(0, 400),
+     xlab = "Estimated correlation", 
+     main = "Estimated correlations after sparsification")
+
+net_pears_genus_unsigned <- netConstruct(data = net_pears_genus$assoEst1,
+                           dataType = "correlation",
+                           sparsMethod = "threshold",
+                           thresh = 0.3,
+                           dissFunc = "unsigned",
+                           verbose = 3)
+#Adjacency values computed using the "unsigned" transformation:
+hist(net_pears_genus_unsigned$adjaMat1, 100, ylim = c(0, 400),
+     xlab = "Adjacency values", 
+     main = "Adjacencies (with \"unsigned\" transformation)")
+```
+
+```{r network-analysis-genus-pearson, warning=FALSE, results='markup'}
+temp.nw <- net_pears_genus
+props_pears_genus <- netAnalyze(temp.nw, 
+                           centrLCC = TRUE,
+                           clustMethod = "cluster_fast_greedy",
+                           hubPar = "eigenvector",
+                           weightDeg = FALSE, normDeg = FALSE)
+
+#?summary.microNetProps
+print(summary(props_pears_genus, numbNodes = 5L))
+```
+
+```{r visualize-network-genus-pearson, warning=FALSE, results='markup'}
+pdf(paste0(wdir, "fig/network-pearson-genus-18s.pdf"), width = 30, height = 15)
+p <- plot(props_pears_genus,
+          edgeInvisFilter = "threshold",
+          edgeInvisPar = 0.5,
+          nodeColor = "cluster",
+          colorVec =   c("#009960", "#CC79A7", "#357090", "#804000"),
+          nodeSize = "eigenvector",
+          repulsion = 0.8,
+          rmSingles = TRUE,
+          labelScale = FALSE,
+          cexLabels = 1.6,
+          nodeSizeSpread = 3,
+          cexNodes = 2,
+          hubBorderCol = "darkgray",
+          #title1 = "Network on genus level with Pearson correlations",
+          showTitle = FALSE,
+          #cexTitle = 2.3)
+          posCol = "#0072B2",
+          negCol = '#e41a1c')
+legend(0.75, 1.1, cex = 2.2, title = "estimated association:",
+       legend = c("+","-"), lty = 1, lwd = 3, col = c("#0072B2", '#e41a1c'), 
+       bty = "n", horiz = FALSE)
+dev.off()
+
+#different transparency value is added to edges with an absolute weight below and above the `cut` value
+print(p$q1$Arguments$cut)
+
+knitr::kable(as.matrix(sort(colSums(net_pears_genus$normCounts1), decreasing = TRUE)[1:20]))
+```
+
+<iframe width="100%" height="550" style="border: 1px solid #464646;" allowfullscreen="" allow="autoplay" data-external="1" src="fig/network-pearson-genus-18s.pdf"></iframe>
+
+
+### Compare genera that were significant in differential abundance analysis
+
+```{r genus-diff-abundance, warning=FALSE, results='markup'}
+#lightVSocean: 8
+my.genus.1 <- res_sig.aldex.lightVSocean %>% dplyr::select(Genus) %>% as.data.frame()
+my.genus.1$lightVSocean <- 1
+#lightVSdark: 15
+my.genus.2 <- tax_table(biom.18s.m.genus)[glm.eff.lightVSdark[glm.eff.lightVSdark$effect >= 1.5,] %>% row.names(),] %>% as.data.frame() %>% dplyr::select(Genus)
+my.genus.2$lightVSdark <- 1
+#light.time.trend: 11
+my.genus.3 <- dge.4.u %>% dplyr::select(Genus) %>% as.data.frame
+my.genus.3$light.time.trend <- 1
+#merge
+my.genus <- merge(x = my.genus.1, y = my.genus.2, by = "Genus", all = TRUE)
+my.genus <- merge(x = my.genus, y = my.genus.3, by = "Genus", all = TRUE)
+
+biom.18s.genus.1 <- biom.18s.genus
+sample_data(biom.18s.genus.1) <- sample_data(biom.18s.genus) %>% as.data.frame() %>% as.matrix() %>% as.data.frame() %>% unite(culture_setup_time, c("Culture_setup", "Time_point"))
+temp.genus <- merge_samples(biom.18s.genus.1, "culture_setup_time", fun=sum) %>% transform_sample_counts(function(x) {x / sum(x)}) %>% psmelt()
+temp.abund <- data.frame()
+for(i in 1:length(my.genus$Genus)) {
+  temp.out <- temp.genus %>% dplyr::filter(Genus %in% my.genus$Genus[i]) %>% dplyr::select(Sample,Abundance,Genus)
+  temp.abund <- rbind(temp.abund, temp.out)
+}
+my.genus.abund <- reshape2::acast(temp.abund, Genus~Sample, value.var = "Abundance")[,c(11,6,7,4,5,9,10,8,2,3,1)] %>% as.data.frame() %>% tibble::rownames_to_column(var = "Genus")
+my.genus.light.18s <- merge(x = my.genus, y = my.genus.abund, by = "Genus", all = TRUE)
+knitr::kable(as.matrix(my.genus.light.18s))
+
+#darkVSocean: 7
+my.genus.4 <- res_sig.aldex.darkVSocean %>% dplyr::select(Genus) %>% as.data.frame()
+my.genus.4$darkVSocean <- 1
+#darkVSlight: 24
+my.genus.5 <- tax_table(biom.18s.m.genus)[glm.eff.lightVSdark[glm.eff.lightVSdark$effect <= -1.5,] %>% row.names(),] %>% as.data.frame() %>% dplyr::select(Genus)
+my.genus.5$darkVSlight <- 1
+#dark.time.trend: 25
+my.genus.6 <- dge.5.u %>% dplyr::select(Genus) %>% as.data.frame
+my.genus.6$dark.time.trend <- 1
+#merge
+my.genus <- merge(x = my.genus.4, y = my.genus.5, by = "Genus", all = TRUE)
+my.genus <- merge(x = my.genus, y = my.genus.6, by = "Genus", all = TRUE)
+
+temp.abund <- data.frame()
+for(i in 1:length(my.genus$Genus)) {
+  temp.out <- temp.genus %>% dplyr::filter(Genus %in% my.genus$Genus[i]) %>% dplyr::select(Sample,Abundance,Genus)
+  temp.abund <- rbind(temp.abund, temp.out)
+}
+my.genus.abund <- reshape2::acast(temp.abund, Genus~Sample, value.var = "Abundance")[,c(11,6,7,4,5,9,10,8,2,3,1)] %>% as.data.frame() %>% tibble::rownames_to_column(var = "Genus")
+my.genus.dark.18s <- merge(x = my.genus, y = my.genus.abund, by = "Genus", all = TRUE)
+knitr::kable(as.matrix(my.genus.dark.18s))
+```
+
+
+### List of all genera with relative abundances per culture setup and time point
+
+```{r genus-rel-abundance-culturesetup_time, warning=FALSE, results='markup'}
+biom.18s.genus.1 <- biom.18s.genus
+sample_data(biom.18s.genus.1) <- sample_data(biom.18s.genus) %>% as.data.frame() %>% as.matrix() %>% as.data.frame() %>% unite(culture_setup_time, c("Culture_setup", "Time_point"))
+temp.genus <- merge_samples(biom.18s.genus.1, "culture_setup_time", fun=sum) %>% transform_sample_counts(function(x) {x / sum(x)}) %>% psmelt()
+temp.abund.all <- temp.genus %>% dplyr::select(Sample,Abundance,Genus)
+rel.abund.18s <- reshape2::acast(temp.abund.all, Genus~Sample, value.var = "Abundance")
+write.table(as.matrix(rel.abund.18s), file = paste0(wdir, "tab-rel-abund-culture-time-18s.csv"), col.names = T, row.names = T, sep = ",", quote = F)
+```
+
+
+```{r save-workspace-18s, warning=FALSE}
+#save workspace
+save.image(paste0(wdir, "/phyloseq-18s.Rdata"))
+```
+
+
+## session information
+
+```{r sessioninfo, results='markup'}
+sessionInfo()
+```

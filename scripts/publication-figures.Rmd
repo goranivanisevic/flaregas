@@ -1,0 +1,836 @@
+---
+title: "FlareGas -- publication figures - revision no. 1"
+author: "SES"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(tidyverse)
+library(phyloseq) #http://joey711.github.io/phyloseq/index.html
+library(reshape2)
+library(psadd) #Interactive Taxonomy plot with Krona
+library("RColorBrewer")
+library(ggrepel)
+library(gplots)
+library(patchwork)
+library(ggpubr)
+library(knitr)
+library(microbiome)
+library(cowplot)
+require(grid)
+library(ALDEx2)
+library(DirichletMultinomial)
+library(plyr)
+
+theme_set(theme_bw(base_size = 18))
+
+knitr::opts_chunk$set(echo = TRUE)
+
+load("../results/phyloseq-16s.Rdata")
+load("../results/phyloseq-18s.Rdata")
+
+devdir <- "../"
+fdir <- paste0(devdir, "results/publication-fig/")
+if( ! dir.exists(fdir) ) { dir.create(fdir) }
+
+
+#https://adiradaniel.netlify.app/post/ggmultipane/
+#https://rpkgs.datanovia.com/ggpubr/
+```
+
+#Biomass and chemotaxonomic markers
+
+```{r figure-2}
+csv <- read.csv(paste0(devdir, "/data/FlareGas-HPLC-figs.csv"))
+
+p.a <- csv %>% filter(Inoculum!="Hels") %>%
+  mutate(`Culture setup` = paste(Incubation,Gas,sep="+")) %>%
+  mutate(`Culture setup` = if_else(`Culture setup` == "Light+Used", "Light+Spent", `Culture setup`)) %>%
+  mutate(`Culture setup` = if_else(`Culture setup` == "Dark+Clean", "Dark", `Culture setup`)) %>%
+  ggplot(aes(x=Day, y=TOC, color=`Culture setup`, shape=Inoculum, group=interaction(Inoculum, `Culture setup`))) + geom_point(cex=4) + geom_line(size=1) + theme(legend.position = c(0.3, 0.6)) + xlab("Time (days)") + ylab("Biomass (mg TOC/L)") + scale_x_continuous(breaks=seq(0,12,1)) + scale_color_manual(values = c("#0072B2", "#009E73", "#CC79A7"))
+p.b <- csv %>% filter(Inoculum!="Hels") %>% mutate(`Culture setup` = paste(Incubation,Gas,sep="+")) %>% ggplot(aes(x=Day, y=Chl.a/TOC, color=`Culture setup`, shape=Inoculum, group=interaction(Inoculum, `Culture setup`))) + geom_point(cex=4) + geom_line(size=1) + theme(legend.position = "none") + xlab("Time (days)") + ylab("Chl a per biomass (mg/g TOC)") + scale_x_continuous(breaks=seq(0,12,1)) + scale_color_manual(values = c("#0072B2", "#009E73", "#CC79A7"))
+p.c <- csv %>% filter(Inoculum!="Hels") %>% mutate(`Culture setup` = paste(Incubation,Gas,sep="+")) %>% ggplot(aes(x=Day, y=PQ.9/TOC, color=`Culture setup`, shape=Inoculum, group=interaction(Inoculum, `Culture setup`))) + geom_point(cex=4) + geom_line(size=1) + theme(legend.position = "none") + xlab("Time (days)") + ylab("PQ-9 per biomass (mg/g TOC)") + scale_x_continuous(breaks=seq(0,12,1)) + scale_color_manual(values = c("#0072B2", "#009E73", "#CC79A7"))
+p.d <- csv %>% filter(Inoculum!="Hels") %>% mutate(`Culture setup` = paste(Incubation,Gas,sep="+")) %>% ggplot(aes(x=Day, y=UQ.8/TOC, color=`Culture setup`, shape=Inoculum, group=interaction(Inoculum, `Culture setup`))) + geom_point(cex=4) + geom_line(size=1) + theme(legend.position = "none") + xlab("Time (days)") + ylab("UQ-8 per biomass (mg/g TOC)") + scale_x_continuous(breaks=seq(0,12,1)) + scale_color_manual(values = c("#0072B2", "#009E73", "#CC79A7"))
+p.a.b.c.d <- ggarrange(p.a, p.b, p.c, p.d, ncol = 4, labels = c("A", "B", "C", "D"), widths = c(1, 1, 1,1), font.label = list(size = 20))
+
+csv$Day <- factor(as.character(csv$Day), levels = c("0","5","7","11","14"))
+csv.l <- csv %>% mutate(`Culture setup` = paste(Inoculum,Gas,sep=" ")) %>% filter(Incubation %in% "Light" & `Culture setup` %in% "Hels Clean") %>% dplyr::select("Culture setup","Day","Chl.a.rel","Chl.b.rel","Chl.c.rel") %>% dplyr::rename("Chl a" = "Chl.a.rel") %>% dplyr::rename("Chl b" = "Chl.b.rel") %>% dplyr::rename("Chl c" = "Chl.c.rel") %>% melt(id=c("Culture setup","Day"))
+csv.l$variable <- factor(csv.l$variable, levels = c("Chl c", "Chl b", "Chl a"))
+p.e.1 <- ggplot(csv.l, aes(x=Day, y=value, fill=variable)) + geom_bar(position="stack", stat="identity") + labs(title = "Helsingør", subtitle = "Light+Clean", x="Time (days)", y="Chlorophyll fraction") + theme(legend.title = element_blank(), plot.title = element_text(size = 16)) + scale_fill_manual(values = c("Chl a" = "#5dc219", "Chl b" = "#4eabed", "Chl c" = "#d9cc1a"))
+csv.l <- csv %>% mutate(`Culture setup` = paste(Inoculum,Gas,sep=" ")) %>% filter(Incubation %in% "Light" & `Culture setup` %in% "Hornbaek-deep Clean") %>% dplyr::select("Culture setup","Day","Chl.a.rel","Chl.b.rel","Chl.c.rel") %>% dplyr::rename("Chl a" = "Chl.a.rel") %>% dplyr::rename("Chl b" = "Chl.b.rel") %>% dplyr::rename("Chl c" = "Chl.c.rel") %>% melt(id=c("Culture setup","Day"))
+csv.l$variable <- factor(csv.l$variable, levels = c("Chl c", "Chl b", "Chl a"))
+p.e.2 <- ggplot(csv.l, aes(x=Day, y=value, fill=variable)) + geom_bar(position="stack", stat="identity") + labs(title = "Hornbæk deep", subtitle= "Light+Clean", x="Time (days)", y="") + theme(axis.text.y = element_blank(), axis.ticks.y = element_blank()) + theme(legend.title = element_blank(), plot.title = element_text(size = 16)) + scale_fill_manual(values = c("Chl a" = "#5dc219", "Chl b" = "#4eabed", "Chl c" = "#d9cc1a"))
+csv.l <- csv %>% mutate(`Culture setup` = paste(Inoculum,Gas,sep=" ")) %>% dplyr::filter(Incubation %in% "Light" & `Culture setup` %in% "Hornbaek-deep Used") %>% dplyr::select("Culture setup","Day","Chl.a.rel","Chl.b.rel","Chl.c.rel") %>% dplyr::rename("Chl a" = "Chl.a.rel") %>% dplyr::rename("Chl b" = "Chl.b.rel") %>% dplyr::rename("Chl c" = "Chl.c.rel") %>% melt(id=c("Culture setup","Day"))
+csv.l$variable <- factor(csv.l$variable, levels = c("Chl c", "Chl b", "Chl a"))
+p.e.3 <- ggplot(csv.l, aes(x=Day, y=value, fill=variable)) + geom_bar(position="stack", stat="identity") + labs(title = "Hornbæk deep", subtitle = "Light+Spent", x="Time (days)", y="") + theme(axis.text.y = element_blank(), axis.ticks.y = element_blank()) + theme(legend.title = element_blank(), plot.title = element_text(size = 16)) + scale_fill_manual(values = c("Chl a" = "#5dc219", "Chl b" = "#4eabed", "Chl c" = "#d9cc1a"))
+p.e <- ggarrange(p.e.1, p.e.2, p.e.3, ncol = 3, common.legend = TRUE,legend="right")
+p.e <- annotate_figure(p.e, top = text_grob("LIGHT", color = "black", face = "bold", size = 20))
+
+csv.l <- csv %>% mutate(`Culture setup` = paste(Inoculum,Gas,sep=" ")) %>% dplyr::filter(Incubation %in% "Light" & `Culture setup` %in% "Hels Clean") %>% dplyr::select("Culture setup","Day","UQ.8.rel","PQ.9.rel") %>% dplyr::rename("UQ-8" = "UQ.8.rel") %>% dplyr::rename("PQ-9" = "PQ.9.rel") %>% melt(id=c("Culture setup","Day"))
+csv.l$variable <- factor(csv.l$variable, levels = c("UQ-8", "PQ-9"))
+p.f.1 <- ggplot(csv.l, aes(x=Day, y=value, fill=variable)) + geom_bar(position="stack", stat="identity") + labs(title = "Helsingør", subtitle = "Light+Clean", x="Time (days)", y="Quinone fraction") + theme(legend.title = element_blank(), plot.title = element_text(size = 16)) + scale_fill_manual(values = c("PQ-9" = "#4bbf8b", "UQ-8" = "#cc6e76"))
+csv.l <- csv %>% mutate(`Culture setup` = paste(Inoculum,Gas,sep=" ")) %>% dplyr::filter(Incubation %in% "Light" & `Culture setup` %in% "Hornbaek-deep Clean") %>% dplyr::select("Culture setup","Day","UQ.8.rel","PQ.9.rel") %>% dplyr::rename("UQ-8" = "UQ.8.rel") %>% dplyr::rename("PQ-9" = "PQ.9.rel") %>% melt(id=c("Culture setup","Day"))
+csv.l$variable <- factor(csv.l$variable, levels = c("UQ-8", "PQ-9"))
+p.f.2 <- ggplot(csv.l, aes(x=Day, y=value, fill=variable)) + geom_bar(position="stack", stat="identity") + labs(title = "Hornbæk deep", subtitle = "Light+Clean", x="Time (days)", y="") + theme(axis.text.y = element_blank(), axis.ticks.y = element_blank()) + theme(legend.title = element_blank(), plot.title = element_text(size = 16)) + scale_fill_manual(values = c("PQ-9" = "#4bbf8b", "UQ-8" = "#cc6e76"))
+csv.l <- csv %>% mutate(`Culture setup` = paste(Inoculum,Gas,sep=" ")) %>% dplyr::filter(Incubation %in% "Light" & `Culture setup` %in% "Hornbaek-deep Used") %>% dplyr::select("Culture setup","Day","UQ.8.rel","PQ.9.rel") %>% dplyr::rename("UQ-8" = "UQ.8.rel") %>% dplyr::rename("PQ-9" = "PQ.9.rel") %>% melt(id=c("Culture setup","Day"))
+csv.l$variable <- factor(csv.l$variable, levels = c("UQ-8", "PQ-9"))
+p.f.3 <- ggplot(csv.l, aes(x=Day, y=value, fill=variable)) + geom_bar(position="stack", stat="identity") + labs(title = "Hornbæk deep", subtitle = "Light+Spent", x="Time (days)", y="") + theme(axis.text.y = element_blank(), axis.ticks.y = element_blank()) + theme(legend.title = element_blank(), plot.title = element_text(size = 16)) + scale_fill_manual(values = c("PQ-9" = "#4bbf8b", "UQ-8" = "#cc6e76"))
+p.f <- ggarrange(p.f.1, p.f.2, p.f.3, ncol = 3, common.legend = TRUE,legend="right")
+p.f <- annotate_figure(p.f, top = text_grob("LIGHT", color = "black", face = "bold", size = 20))
+
+csv.l <- csv %>% mutate(`Culture setup` = paste(Inoculum,Gas,sep=" ")) %>% dplyr::filter(Incubation %in% "Dark" & `Culture setup` %in% "Hornbaek-deep Clean") %>% dplyr::select("Culture setup","Day","UQ.8.rel","PQ.9.rel") %>% dplyr::rename("UQ-8" = "UQ.8.rel") %>% dplyr::rename("PQ-9" = "PQ.9.rel") %>% melt(id=c("Culture setup","Day"))
+csv.l$variable <- factor(csv.l$variable, levels = c("UQ-8", "PQ-9"))
+p.g.1 <- ggplot(csv.l, aes(x=Day, y=value, fill=variable)) + geom_bar(position="stack", stat="identity") + labs(title = "Hornbæk deep", subtitle = "", x="Time (days)", y="Quinone fraction") + theme(legend.title = element_blank(), plot.title = element_text(size = 16)) + scale_fill_manual(values = c("PQ-9" = "#4bbf8b", "UQ-8" = "#cc6e76"))
+csv.l <- csv %>% mutate(`Culture setup` = paste(Inoculum,Gas,sep=" ")) %>% dplyr::filter(Incubation %in% "Dark" & `Culture setup` %in% "Hornbaek-shallow Clean") %>% dplyr::select("Culture setup","Day","UQ.8.rel","PQ.9.rel") %>% dplyr::rename("UQ-8" = "UQ.8.rel") %>% dplyr::rename("PQ-9" = "PQ.9.rel") %>% melt(id=c("Culture setup","Day"))
+csv.l$variable <- factor(csv.l$variable, levels = c("UQ-8", "PQ-9"))
+p.g.2 <- ggplot(csv.l, aes(x=Day, y=value, fill=variable)) + geom_bar(position="stack", stat="identity") + labs(title = "Hornbæk shallow", subtitle = "", x="Time (days)", y="") + theme(legend.title = element_blank(), plot.title = element_text(size = 16)) + scale_fill_manual(values = c("PQ-9" = "#4bbf8b", "UQ-8" = "#cc6e76"))
+p.g <- ggarrange(p.g.1, p.g.2, ncol = 2, common.legend = TRUE, legend = "right")
+p.g <- annotate_figure(p.g, top = text_grob("DARK", color = "black", face = "bold", size = 20))
+p.e.f.g <- ggarrange(p.e, p.f, p.g, ncol = 3, labels = c("E", "F", "G"), widths = c(3,3,2), font.label = list(size = 20))
+
+pdf(paste0(fdir, "fig-2.pdf"), width = 24, height = 12)
+plot(ggarrange(p.a.b.c.d, p.e.f.g, ncol = 1))
+dev.off()
+```
+
+
+#alpha and beta diversity
+
+```{r figure-3}
+alpha_meas <- "Chao1"
+
+#rename culture setups
+sample_data(biom.16s.m)$Culture_setup <- factor(sample_data(biom.16s.m)$Culture_setup)
+sample_data(biom.16s.m)$Culture_setup <- revalue(sample_data(biom.16s.m)$Culture_setup, c("ocean" = "Ocean", "light+clean_gas" = "Light+Clean", "light+used_gas" = "Light+Spent", "dark+clean_gas" = "Dark"))
+sample_data(biom.16s.m)$Culture_setup <- factor(sample_data(biom.16s.m)$Culture_setup, levels = c("Ocean", "Dark", "Light+Clean", "Light+Spent"))
+#rename inoculums
+sample_data(biom.16s.m)$Inoculum <- factor(sample_data(biom.16s.m)$Inoculum)
+levels(sample_data(biom.16s.m)$Inoculum) <- c("Helsingør", "Hornbæk deep", "Hornbæk shallow")
+
+sample_data(biom.16s.m)$Time_point <- factor(sample_data(biom.16s.m)$Time_point, levels = c("0","5","7","11","14"))
+p <- plot_richness(biom.16s.m, "Culture_setup", "Time_point", measures=alpha_meas)
+p.a <- p + geom_boxplot(data=p$data, aes(x=Culture_setup, y=value, color=NULL), alpha=0.1) + theme(legend.position="none", legend.text =               element_text(size = 20), text = element_text(size = 20), axis.text.x = element_text(angle = 0, hjust = 0.5)) + xlab("Culture setup") +                 scale_color_manual(values = c("#D55E00", "#E69F00", "#999999", "#56B4E9", "#0072B2"))
+p.a <- update_labels(p.a, list(colour="Time"))
+biom.16s.pcoa.bray = ordinate(biom.16s.m, method="PCoA", distance="bray")
+p.c <- plot_ordination(biom.16s.m, biom.16s.pcoa.bray, "samples", color="Culture_setup", shape = "Time_point") +
+  geom_text_repel(aes(label = Inoculum), size = 3, vjust = 1.2) + geom_point(size=3) + theme(text = element_text(size = 20), legend.position="none",   legend.text = element_text(size = 20)) + scale_color_manual(values=c("#D55E00", "#0072B2", "#009E73", "#CC79A7")) + guides(color =                     guide_legend(override.aes = list(size = 5)))
+p.c <- update_labels(p.c, list(shape="Time", colour="Culture setup"))
+
+#rename culture setups
+sample_data(biom.18s.m)$Culture_setup <- factor(sample_data(biom.18s.m)$Culture_setup)
+sample_data(biom.18s.m)$Culture_setup <- revalue(sample_data(biom.18s.m)$Culture_setup, c("ocean" = "Ocean", "light+clean_gas" = "Light+Clean", "light+used_gas" = "Light+Spent", "dark+clean_gas" = "Dark"))
+sample_data(biom.18s.m)$Culture_setup <- factor(sample_data(biom.18s.m)$Culture_setup, levels = c("Ocean", "Dark", "Light+Clean", "Light+Spent"))
+
+sample_data(biom.18s.m)$Time_point <- factor(sample_data(biom.18s.m)$Time_point, levels = c("0","5","7","11","14"))
+p <- plot_richness(biom.18s.m, "Culture_setup", "Time_point", measures=alpha_meas)
+p.b <- p + geom_boxplot(data=p$data, aes(x=Culture_setup, y=value, color=NULL), alpha=0.1, show.legend = FALSE) + theme(legend.position = "none",      legend.text = element_text(size = 20), text = element_text(size = 20), axis.text.x = element_text(angle = 0, hjust = 0.5)) + xlab("Culture setup")+    scale_color_manual(values = c("#D55E00", "#E69F00", "#999999", "#56B4E9", "#0072B2"))
+p.b <- update_labels(p.b, list(colour="Time"))
+
+#rename inoculums
+sample_data(biom.18s.m) <- sample_data(biom.18s.m) %>% as.matrix() %>% as.data.frame() %>% dplyr::mutate(Inoculum = if_else(Primer == "ss5+ss3",       "Helsingør\u{00B6}", Inoculum))
+sample_data(biom.18s.m)$Inoculum <- factor(sample_data(biom.18s.m)$Inoculum)
+levels(sample_data(biom.18s.m)$Inoculum) <- c("Helsingør", "Helsingør\u{00B6}", "Hornbæk deep", "Hornbæk shallow")
+sample_data(biom.18s.m)$Time_point <- factor(sample_data(biom.18s.m)$Time_point, levels = c("0","5","7","11","14"))
+
+biom.18s.pcoa.bray = ordinate(biom.18s.m, method="PCoA", distance="bray")
+p.d <- plot_ordination(biom.18s.m, biom.18s.pcoa.bray, "samples", color="Culture_setup", shape = "Time_point") +
+  geom_text_repel(aes(label = Inoculum), size = 3, vjust = 1.2) + geom_point(size=3) + theme(text = element_text(size = 20), legend.position="none",   legend.text = element_text(size = 20)) +
+  scale_color_manual(values=c("#0072B2", "#009E73", "#CC79A7", "#D55E00")) + guides(color = guide_legend(override.aes = list(size = 5)))
+p.d <- update_labels(p.d, list(shape="Time", colour="Culture setup"))
+
+pdf(paste0(fdir, "fig-3.pdf"), width = 17, height = 10)
+#plot(ggarrange(p.a, p.b, p.c, p.d, ncol = 2, nrow = 2, labels = c("A", "B", "C", "D"), widths = c(0.8, 1), font.label = list(size = 16), common.      legend = TRUE, legend="bottom"))
+p.ab <- ggarrange(p.a, p.b, ncol = 2, nrow = 1, labels = c("A", "B"), widths = c(1,1), font.label = list(size = 16), common.legend = TRUE,             legend="top")
+p.cd <- ggarrange(p.c, p.d, ncol = 2, nrow = 1, labels = c("C", "D"), widths = c(1,1), font.label = list(size = 16), common.legend = TRUE,             legend="top")
+plot_grid(p.ab, p.cd, nrow = 2)
+dev.off()
+```
+
+
+# bacteria and eukaryotic microbes relative diversity
+
+```{r figure-4}
+#16S
+#samples with the same label should be merged for plotting of relative abundances for Culture_setup-Inoculum-Time_point categories
+biom.16s.nr <- biom.16s
+sample_data(biom.16s.nr) <- sample_data(biom.16s.nr)[,c("Label", "Culture_setup", "Inoculum", "Time_point")]
+biom.16s.nr <- merge_samples(biom.16s.nr, "Label") #merge replicates
+temp.16s.nr.sample_data <- sample_data(biom.16s)[,c("Label", "Culture_setup", "Inoculum", "Time_point")]
+#https://rdrr.io/github/kstagaman/phyloseqCompanion/src/R/sample_data_frame.R
+sample.data.frame <- function(ps) {
+  return(as(phyloseq::sample_data(ps), "data.frame"))
+}
+temp.16s.nr.sample_data <- sample.data.frame(temp.16s.nr.sample_data) %>% distinct()
+rownames(temp.16s.nr.sample_data) <- temp.16s.nr.sample_data$Label
+sample_data(biom.16s.nr) <- temp.16s.nr.sample_data
+sample_data(biom.16s.nr)$Inoculum <- factor(sample_data(biom.16s.nr)$Inoculum)
+levels(sample_data(biom.16s.nr)$Inoculum) <- c("Helsingør", "Hornbæk deep", "Hornbæk shallow")
+
+phylum.16s <- biom.16s.nr %>% tax_glom(taxrank = "Phylum") %>% transform_sample_counts(function(x) {x / sum(x)}) %>% psmelt() %>% filter(Abundance>0.01) %>% arrange(Phylum)
+no.phy <- length(levels(as.factor(phylum.16s$Phylum)))
+getPalette = colorRampPalette(brewer.pal(7, "Set1"))
+my.palette = getPalette(no.phy)
+phylum.16s$Culture_setup <- factor(phylum.16s$Culture_setup)
+levels(phylum.16s$Culture_setup) <- c("Dark", "Light+Clean", "Light+Spent", "Ocean")
+phylum.16s$Culture_setup <- factor(phylum.16s$Culture_setup, levels = c("Ocean", "Dark", "Light+Clean", "Light+Spent"))
+phylum.16s$Time_point <- factor(phylum.16s$Time_point, levels = c("0","5","7","11","14"))
+p.a <- ggplot(phylum.16s, aes(x = Time_point, y = Abundance, fill = Phylum)) +  geom_bar(stat = "identity") + facet_grid(vars(Inoculum), vars(Culture_setup), scales = "free_x", space = "free_x") + scale_fill_manual(values = my.palette) + ylab("Relative abundance") + xlab("Time (days)")
+
+#18S
+#samples with the same label should be merged for plotting of relative abundances for Culture_setup-Inoculum-Time_point categories
+biom.18s.nr <- biom.18s
+sample_data(biom.18s.nr) <- sample_data(biom.18s.nr)[,c("Label", "Culture_setup", "Inoculum", "Time_point")]
+biom.18s.nr <- merge_samples(biom.18s.nr, "Label") #merge replicates
+temp.18s.nr.sample_data <- sample_data(biom.18s)[,c("Label", "Culture_setup", "Inoculum", "Time_point")]
+#https://rdrr.io/github/kstagaman/phyloseqCompanion/src/R/sample_data_frame.R
+temp.18s.nr.sample_data <- sample.data.frame(temp.18s.nr.sample_data) %>% distinct()
+rownames(temp.18s.nr.sample_data) <- temp.18s.nr.sample_data$Label
+sample_data(biom.18s.nr) <- temp.18s.nr.sample_data
+sample_data(biom.18s.nr)$Inoculum <- factor(sample_data(biom.18s.nr)$Inoculum)
+levels(sample_data(biom.18s.nr)$Inoculum) <- c("Helsingør", "Hornbæk deep", "Hornbæk shallow")
+
+subdivision.18s <- biom.18s.nr %>% tax_glom(taxrank = "Subdivision") %>% transform_sample_counts(function(x) {x / sum(x)}) %>% psmelt() %>% filter(Abundance>0.01) %>% arrange(Subdivision)
+no.phy <- length(levels(as.factor(subdivision.18s$Subdivision)))
+getPalette = colorRampPalette(brewer.pal(8, "Set1"))
+my.palette = getPalette(no.phy)
+subdivision.18s$Culture_setup <- factor(subdivision.18s$Culture_setup)
+levels(subdivision.18s$Culture_setup) <- c("Dark", "Light+Clean", "Light+Spent", "Ocean")
+subdivision.18s$Culture_setup <- factor(subdivision.18s$Culture_setup, levels = c("Ocean", "Dark", "Light+Clean", "Light+Spent"))
+subdivision.18s$Time_point <- factor(subdivision.18s$Time_point, levels = c("0","5","7","11","14"))
+subdivision.18s <- subdivision.18s %>% as.data.frame() %>% mutate(Subdivision = str_remove(Subdivision, "_X"))
+p.b <- ggplot(subdivision.18s, aes(x = Time_point, y = Abundance, fill = Subdivision)) +  geom_bar(stat = "identity") + facet_grid(vars(Inoculum), vars(Culture_setup), scales = "free_x", space = "free_x") + scale_fill_manual(values = my.palette) + ylab("Relative abundance") + xlab("Time (days)")
+
+pdf(paste0(fdir, "fig-4.pdf"), width = 20, height = 10)
+plot(ggarrange(p.a, p.b, ncol = 2, labels = c("A", "B"), widths = c(1, 1), font.label = list(size = 20)))
+dev.off()
+```
+
+# differential relative abundance between light and seawater as well as dark and seawater
+
+```{r figure-5}
+#16S lightVSocean
+load("../results/phyloseq-16s.Rdata")
+#adapt names
+res_sig.aldex <- res_sig.aldex.lightVSocean %>% mutate(Genus = if_else(Genus == "Oxyphotobacteria_Incertae_Sedis_Unknown_Family_Unknown_Family", "Oxyphotobacteria_Incertae_Sedis", Genus))
+no.phy <- length(levels(as.factor(res_sig.aldex$Phylum)))
+getPalette = colorRampPalette(brewer.pal(5, "Set1"))
+my.palette = getPalette(no.phy)
+pp.a <- ggplot(res_sig.aldex, aes(y=reorder(Genus,diff.btw), x=diff.btw, color=Phylum)) +
+    geom_point(size=6) +
+    labs(x = "log2FC", y = "Genus") +
+    theme(legend.position = "top", legend.justification="right", legend.title.position = "top", legend.text = element_text(size = 18), text = element_text(size = 30)) +
+    scale_color_manual(values = my.palette)
+#16S darkVSocean
+res_sig.aldex <- res_sig.aldex.darkVSocean
+res_sig.aldex <- res_sig.aldex.darkVSocean %>% mutate(Genus = str_remove(Genus, "_uncultured$"))
+no.phy <- length(levels(as.factor(res_sig.aldex$Phylum)))
+getPalette = colorRampPalette(brewer.pal(5, "Set1"))
+my.palette = getPalette(no.phy)
+pp.b <- ggplot(res_sig.aldex, aes(y=reorder(Genus,diff.btw), x=diff.btw, color=Phylum)) +
+    geom_point(size=6) +
+    labs(x = "log2FC", y = "Genus") +
+    theme(legend.position = "top", legend.justification="right", legend.title.position = "top", legend.text = element_text(size = 18), text = element_text(size = 30)) +
+    scale_color_manual(values = my.palette)
+
+#18S lightVSocean
+load("../results/phyloseq-18s.Rdata")
+res_sig.aldex <- res_sig.aldex.lightVSocean %>% mutate(Genus = str_remove(Genus, "_X*$")) %>% mutate(Subdivision = str_remove(Subdivision, "_X"))
+no.phy <- length(levels(as.factor(res_sig.aldex$Subdivision)))
+getPalette = colorRampPalette(brewer.pal(5, "Set1"))
+my.palette = getPalette(no.phy)
+pp.c <- ggplot(res_sig.aldex, aes(y=reorder(Genus,diff.btw), x=diff.btw, color=Subdivision)) +
+    geom_point(size=6) +
+    labs(x = "log2FC", y = "Genus") +
+    theme(legend.position = "top", legend.justification="right", legend.title.position = "top", legend.text = element_text(size = 18), text = element_text(size = 30)) +
+    scale_color_manual(values = my.palette)
+#18S darkVSocean
+res_sig.aldex <- res_sig.aldex.darkVSocean %>% mutate(Genus = str_remove(Genus, "_X*$")) %>% mutate(Subdivision = str_remove(Subdivision, "_X"))
+no.phy <- length(levels(as.factor(res_sig.aldex$Subdivision)))
+getPalette = colorRampPalette(brewer.pal(5, "Set1"))
+my.palette = getPalette(no.phy)
+pp.d <- ggplot(res_sig.aldex, aes(y=reorder(Genus,diff.btw), x=diff.btw, color=Subdivision)) +
+    geom_point(size=6) +
+    labs(x = "log2FC", y = "Genus") +
+    theme(legend.position = "top", legend.justification="right", legend.title.position = "top", legend.text = element_text(size = 18), text = element_text(size = 30)) +
+    scale_color_manual(values = my.palette)
+
+pdf(paste0(fdir, "fig-5.pdf"), width = 18, height = 18)
+plot(ggarrange(pp.a, pp.b, pp.c, pp.d, ncol = 2, nrow = 2, heights = c(5.5,3), labels = c("A", "B", "C", "D"), font.label = list(size = 34)))
+dev.off()
+```
+
+# cyanobacteria and methanotrophs relative abundance
+
+```{r figure-6}
+#Cyanobacteria centered log-ratio
+cyanobac <- tax_glom(biom.cyano.clr, taxrank = "Phylum")
+temp.1 <- sample_data(cyanobac) %>% as.matrix() %>% as.data.frame() %>% rownames_to_column(var = "SampleID")
+temp.2 <- otu_table(cyanobac) %>% t() %>% as.data.frame() %>% rownames_to_column(var = "SampleID") %>% dplyr::rename("clr" = "38086")
+temp.3 <- inner_join(temp.1, temp.2, by = "SampleID")
+temp.3$Culture_setup <- factor(temp.3$Culture_setup)
+levels(temp.3$Culture_setup) <- c("Dark", "Light+Clean", "Light+Spent", "Ocean")
+temp.3$Inoculum <- factor(temp.3$Inoculum)
+levels(temp.3$Inoculum) <- c("Helsingør", "Hornbæk deep", "Hornbæk shallow")
+
+p.a <- ggbarplot(temp.3, y = "clr", x = "Inoculum", rotate = TRUE, fill = "Culture_setup", color = "white", palette = c("#0072B2", "#009E73", "#CC79A7", "#D55E00"), ggtheme = theme_minimal()) + theme(plot.margin = margin(0.2,0.5,0.5,0.2, 'cm'), legend.text.position = "top")
+p.a <- ggpar(p.a, legend.title = "Culture setup", font.x = 12, font.y = 12, ticks = FALSE, font.tickslab = 12, font.legend = 10, legend = "top", ylab = "Centered log-ratio of cyanobacteria")
+#p.a <- plot_bar(cyanobac) + geom_bar(stat = "identity", position = "stack", fill = "dark green") + theme(axis.text.x =element_text(angle=90,hjust=1)) + scale_x_discrete(limits = sampleid.16s)
+
+#adapt names
+taxa.cyano$Culture_setup <- factor(taxa.cyano$Culture_setup)
+levels(taxa.cyano$Culture_setup) <- c("Ocean", "Light+Clean", "Light+Spent", "Dark")
+taxa.cyano.1 <- taxa.cyano %>% mutate(Family = if_else(Family == "Oxyphotobacteria_Incertae_Sedis_Unknown_Family", "Oxyphotobacteria", Family))
+taxa.cyano.1 <- taxa.cyano.1 %>% mutate(Family = if_else(Family == "Synechococcales_Incertae_Sedis", "Synechococcales", Family))
+
+#abundance relative to all cyanobacteria
+family.lst <- levels(as.factor(taxa.cyano.1$Family))
+no.taxa <- length(family.lst)
+getPalette = colorRampPalette(brewer.pal(8, "Set1"))
+my.palette = getPalette(no.taxa)
+my.colors <- my.palette
+names(my.colors) <- family.lst
+
+#Hornbaek-deep
+taxa.cyano.deep <- taxa.cyano.1 %>% mutate(Culture_setup__Time = paste0(Culture_setup, " + ", Time_point)) %>% filter(Inoculum=="Hornbaek-deep")
+taxa.cyano.deep$Culture_setup__Time <- factor(taxa.cyano.deep$Culture_setup__Time, level=c("Ocean + 0", "Dark + 5", "Dark + 7", "Light+Clean + 5", "Light+Clean + 7", "Light+Clean + 11", "Light+Spent + 5", "Light+Spent + 7", "Light+Spent + 11"))
+p.b.1 <- ggbarplot(taxa.cyano.deep, y = "Abundance", x = "Culture_setup__Time", rotate = TRUE, fill = "Family", color = "white", palette = my.colors, xlab = "Culture setup + Time", ylab = "Abundance relative to cyanobacteria", title = "Hornbæk deep")
+#Hornbaek-shallow
+taxa.cyano.shallow <- taxa.cyano.1 %>% mutate(Culture_setup__Time = paste0(Culture_setup, " + ", Time_point)) %>% filter(Inoculum=="Hornbaek-shallow")
+taxa.cyano.shallow$Culture_setup__Time <- factor(taxa.cyano.shallow$Culture_setup__Time, level=c("Ocean + 0", "Dark + 5", "Dark + 11"))
+p.b.2 <- ggbarplot(taxa.cyano.shallow, y = "Abundance", x = "Culture_setup__Time", rotate = TRUE, fill = "Family", color = "white", palette = my.colors, xlab = "", ylab = "", title = "Hornbæk shallow")
+#Helsingoer
+taxa.cyano.helsingor <- taxa.cyano.1 %>% mutate(Culture_setup__Time = paste0(Culture_setup, " + ", Time_point)) %>% filter(Inoculum=="Helsingor")
+taxa.cyano.helsingor$Culture_setup__Time <- factor(taxa.cyano.helsingor$Culture_setup__Time, level=c("Ocean + 0", "Light+Clean + 7", "Light+Clean + 14"))
+p.b.3 <- ggbarplot(taxa.cyano.helsingor, y = "Abundance", x = "Culture_setup__Time", rotate = TRUE, fill = "Family", color = "white", palette = my.colors, xlab = "", ylab = "Abundance relative to cyanobacteria", title = "Helsingør")
+p.b.4 <- ggarrange(p.b.2, p.b.3, nrow = 2, legend = "none")
+p.b <- ggarrange(p.b.1, p.b.4, ncol = 2, common.legend = TRUE) + theme(plot.margin = margin(0.2,0.2,0.5,0.5, 'cm'), legend.text.position = "top")
+#p.b <- ggplot(taxa.cyano, aes(x = Time_point, y = Abundance, fill = Family)) +  geom_bar(stat = "identity") + facet_grid(vars(Inoculum),vars(Culture_setup), scales = "free_x", space = "free_x") + scale_fill_manual(values = my.palette) + ylab("Relative abundance")
+
+#Methanotroph centered log-ratio
+mob <- tax_glom(biom.mob.clr, taxrank = "Phylum")
+temp.1 <- sample_data(mob) %>% as.matrix() %>% as.data.frame() %>% rownames_to_column(var = "SampleID")
+temp.2 <- otu_table(mob) %>% t() %>% as.data.frame() %>% rownames_to_column(var = "SampleID") %>% dplyr::rename("clr" = "4061")
+temp.3 <- inner_join(temp.1, temp.2, by = "SampleID")
+temp.3$Culture_setup <- factor(temp.3$Culture_setup)
+levels(temp.3$Culture_setup) <- c("Dark", "Light+Clean", "Light+Spent", "Ocean")
+temp.3$Inoculum <- factor(temp.3$Inoculum)
+levels(temp.3$Inoculum) <- c("Helsingør", "Hornbæk deep", "Hornbæk shallow")
+
+p.c <- ggbarplot(temp.3, y = "clr", x = "Inoculum", rotate = TRUE, fill = "Culture_setup", color = "white", palette = c("#0072B2", "#009E73", "#CC79A7", "#D55E00"), ggtheme = theme_minimal()) + theme(plot.margin = margin(0.5,0.5,0.2,0.2, 'cm'), legend.text.position = "top")
+p.c <- ggpar(p.c, legend.title = "Culture setup", font.x = 12, font.y = 12, ticks = FALSE, font.tickslab = 12, font.legend = 10, legend = "top", ylab = "Centered log-ratio of methanotrophs") + scale_color_manual(values=c("#0072B2", "#009E73", "#CC79A7", "#D55E00"))
+#p.c <- plot_bar(mob) + geom_bar(stat = "identity", position = "stack", fill = "dark green") + theme(axis.text.x =element_text(angle=90,hjust=1)) + scale_x_discrete(limits = sampleid.16s)
+
+#adapt names
+taxa.mob$Culture_setup <- factor(taxa.mob$Culture_setup)
+levels(taxa.mob$Culture_setup) <- c("Ocean", "Light+Clean", "Dark")
+taxa.mob.1 <- taxa.mob %>% mutate(Genus = if_else(Genus == "Methylomonadaceae_uncultured", "Methylomonadaceae", Genus))
+
+#abundance relative to all methanotrophs
+genus.lst <- levels(as.factor(taxa.mob.1$Genus))
+no.taxa <- length(genus.lst)
+getPalette = colorRampPalette(brewer.pal(8, "Set1"))
+my.palette = getPalette(no.taxa)
+my.colors <- my.palette
+names(my.colors) <- genus.lst
+
+#Hornbaek-deep
+taxa.mob.deep <- taxa.mob.1 %>% mutate(Culture_setup__Time = paste0(Culture_setup, " + ", Time_point)) %>% filter(Inoculum=="Hornbaek-deep")
+taxa.mob.deep$Culture_setup__Time <- factor(taxa.mob.deep$Culture_setup__Time, level=c("Dark + 5", "Dark + 7", "Dark + 11", "Light+Clean + 7", "Light+Clean + 11"))
+p.d.1 <- ggbarplot(taxa.mob.deep, y = "Abundance", x = "Culture_setup__Time", rotate = TRUE, fill = "Genus", color = "white", palette = my.colors, xlab = "Culture setup + Time", ylab = "Abundance relative to methanotrophs", title = "Hornbæk deep")
+#Hornbaek-shallow
+taxa.mob.shallow <- taxa.mob.1 %>% mutate(Culture_setup__Time = paste0(Culture_setup, " + ", Time_point)) %>% filter(Inoculum=="Hornbaek-shallow")
+taxa.mob.shallow$Culture_setup__Time <- factor(taxa.mob.shallow$Culture_setup__Time, level=c("Ocean + 0", "Dark + 5", "Dark + 7", "Dark + 11"))
+p.d.2 <- ggbarplot(taxa.mob.shallow, y = "Abundance", x = "Culture_setup__Time", rotate = TRUE, fill = "Genus", color = "white", palette = my.colors, xlab = "", ylab = "", title = "Hornbæk shallow")
+#Helsingoer
+taxa.mob.helsingor <- taxa.mob.1 %>% mutate(Culture_setup__Time = paste0(Culture_setup, " + ", Time_point)) %>% filter(Inoculum=="Helsingor")
+taxa.mob.helsingor$Culture_setup__Time <- factor(taxa.mob.helsingor$Culture_setup__Time, level=c("Light+Clean + 7"))
+p.d.3 <- ggbarplot(taxa.mob.helsingor, y = "Abundance", x = "Culture_setup__Time", rotate = TRUE, fill = "Genus", color = "white", palette = my.colors, xlab = "", ylab = "Abundance relative to methanotrophs", title = "Helsingør")
+p.d.4 <- ggarrange(p.d.2, p.d.3, nrow = 2, legend = "none", heights = c(2,1))
+p.d <- ggarrange(p.d.1, p.d.4, ncol = 2, common.legend = TRUE) + theme(plot.margin = margin(0.5,0.2,0,0.5, 'cm'))
+#p.d <- ggplot(taxa.mob, aes(x = Time_point, y = Abundance, fill = Genus)) +  geom_bar(stat = "identity") + facet_grid(vars(Inoculum),vars(Culture_setup), scales = "free_x", space = "free_x") + scale_fill_manual(values = my.palette) + ylab("Relative abundance")
+
+pdf(paste0(fdir, "fig-6.pdf"), width = 15, height = 10)
+plot(ggarrange(p.a, p.b, p.c, p.d, ncol = 2, nrow = 2, labels = c("A", "B", "C","D"), widths = c(1.4, 2) ))
+dev.off()
+```
+
+# Relative abundance profiles of selected taxonomies
+
+```{r figure-7-rel}
+#16S
+biom.16s.rel.genus <- biom.16s.rel %>% tax_glom(taxrank = "Genus")
+#biom.16s.m.rel.genus <- biom.16s.m.rel %>% tax_glom(taxrank = "Genus")
+
+my.genus <- c(
+  "Aureispira",          #most abundant genus in light; most light specific genus based on DMM model (low relative abundance at 5 but very high at 7 and 11)
+  "Marivita",            #most abundant genus in light and dark; increase over time in the dark; most specific genus for cultivation (light and dark) based on DMM model
+  "Lentibacter",         #most abundant in the ocean
+  "Geitlerinema_PCC-7105", #most abundant genus in light; #most light specific genus based on DMM model
+  "Methylophaga",        #most abundant genus in dark; most dark specific genus based on DMM model; increase over time under light
+  "Methylomicrobium",    #most dark specific genus based on DMM model; most diff. abundance in dark compared to light (together with Methylobacter); increase over time under light (very low counts)
+  "Marivivens",          #NW cluster of inoculums; similar relative abundance in the inoculum compared to the cultures
+  "Symphothece_PCC-7002", #cyanobacteria with most diff. abundance in light compared to dark (light specific genus based on DMM model)
+  "Winogradskyella",     #increase over time in the dark
+  "Methylobacter",       #most diff. abundance in dark compared to light (together with Methylomicrobium)
+  "Cyanobium_PCC-6307",  #NW cluster of inoculumns; similar relative abundance in the inoculum compared to the cultures; diff. abundance in light
+  "Methylomonas"        #exist at low amount under light (rel. abundance aggregated over all light+clean incubations: 0.001165191)
+  #"Alteromonas",         #increase in abundance under light conditions similar than cyanobacteria (edgeR light vs dark)
+)
+
+#check abundances of candidates
+#taxid <- tax_table(biom.16s.genus) %>% as.data.frame() %>% filter(Genus=="Methylomicrobium") %>% rownames()
+#otu_table(biom.16s.genus)[taxid,]
+#taxid <- tax_table(biom.16s.rel.genus) %>% as.data.frame() %>% filter(Genus=="Methylomicrobium") %>% rownames()
+#otu_table(biom.16s.rel.genus)[taxid,]
+
+#taxid <- tax_table(biom.16s.genus) %>% as.data.frame() %>% filter(Genus==my.genus) %>% rownames()
+#otu_table(biom.16s.genus)[taxid,]
+#logCPM.obs[taxid,]
+#for(i in my.genus) {
+#  taxid <- tax_table(biom.16s.rel.genus) %>% as.data.frame() %>% filter(Genus==i) %>% rownames()
+#  p <- boxplot_abundance(biom.16s.rel.genus, x = "Culture_setup", y = taxid) + ggtitle(i) + ylab("clr")
+#  print(p)
+#}
+
+p.16s.lst <- list()
+for(i in 1:length(my.genus)) {
+  taxid <- tax_table(biom.16s.rel.genus) %>% as.data.frame() %>% filter(Genus==my.genus[i]) %>% rownames()
+  temp.1 <- sample_data(biom.16s.rel.genus) %>% as.matrix() %>% as.data.frame() %>% rownames_to_column(var = "SampleID")
+  temp.2 <- otu_table(biom.16s.rel.genus)[taxid,] %>% t() %>% as.data.frame() %>% rownames_to_column(var = "SampleID")
+  colnames(temp.2)[2] <- "Relative abundance"
+  temp.3 <- inner_join(temp.1, temp.2, by = "SampleID")
+  temp.3$Culture_setup <- factor(temp.3$Culture_setup, levels = c("ocean", "dark+clean_gas", "light+clean_gas", "light+used_gas"))
+  levels(temp.3$Culture_setup) <- c("Ocean", "Dark", "Light+Clean", "Light+Spent")
+  temp.3$Time_point <- factor(temp.3$Time_point, levels = c("0","5","7","11","14"))
+  pp <- ggplot(temp.3, aes(x = Culture_setup, y = `Relative abundance`)) + geom_boxplot() + geom_jitter(aes(color = Time_point), size=2, alpha=0.8, width = 0.1) + xlab("Culture setup") + ggtitle(my.genus[i]) + scale_y_log10() + theme(legend.position = "none", axis.text.x = element_text(angle = 30, hjust = 0.5, vjust = 0.7)) + scale_color_manual(values = c("#D55E00", "#E69F00", "#999999", "#56B4E9", "#0072B2"))
+  pp <- update_labels(pp, list(colour="Time"))
+  plot(pp)
+  p.16s.lst[[i]] <- pp
+}
+
+#18S
+biom.18s.rel.genus <- biom.18s.rel %>% tax_glom(taxrank = "Genus")
+#biom.18s.m.rel.genus <- biom.18s.m.rel %>% tax_glom(taxrank = "Genus")
+
+my.genus <- c(
+  "Picochlorum",         #most abundant genus in light and dark incubation
+  "Nannochloris",        #most abundant genus in light used; increase over time under light and in dark
+  "Chlamydomonas",       #most abundant genus in light clean; increase over time in dark
+  "Aspidisca",           #most abundant genus in dark; most dark specific genus based on DMM model
+  "Tetraselmis",         #most abundant genus in light
+  #"Chlorellales_XX",     #most diff. abundance between light and dark
+  "Rimostrombidium",      #most abundant genus in dark
+  "Paraphysomonas",       #increase over time in dark
+  "Chlorodendrales_XX"  #most light specific genus based on DMM model
+)
+
+#taxid <- tax_table(biom.18s.m.genus) %>% as.data.frame() %>% filter(Genus==my.genus) %>% rownames()
+#otu_table(biom.18s.m.genus)[taxid,]
+#logCPM.obs[taxid,]
+
+p.18s.lst <- list()
+for(i in 1:length(my.genus)) {
+  taxid <- tax_table(biom.18s.rel.genus) %>% as.data.frame() %>% filter(Genus==my.genus[i]) %>% rownames()
+  temp.1 <- sample_data(biom.18s.rel.genus) %>% as.matrix() %>% as.data.frame() %>% rownames_to_column(var = "SampleID")
+  temp.2 <- otu_table(biom.18s.rel.genus)[taxid,] %>% t() %>% as.data.frame() %>% rownames_to_column(var = "SampleID")
+  colnames(temp.2)[2] <- "Relative abundance"
+  temp.3 <- inner_join(temp.1, temp.2, by = "SampleID")
+  temp.3$Culture_setup <- factor(temp.3$Culture_setup, levels = c("ocean", "dark+clean_gas", "light+clean_gas", "light+used_gas"))
+  levels(temp.3$Culture_setup) <- c("Ocean", "Dark", "Light+Clean", "Light+Spent")
+  temp.3$Time_point <- factor(temp.3$Time_point, levels = c("0","5","7","11","14"))
+  my.title <- str_remove(my.genus[i], "_X*$")
+  pp <- ggplot(temp.3, aes(x = Culture_setup, y = `Relative abundance`)) + geom_boxplot() + geom_jitter(aes(color = Time_point), size=2, alpha=0.8, width = 0.1) + xlab("Culture setup") + ggtitle(my.title) + theme(legend.position = "none", axis.text.x = element_text(angle = 30, hjust = 0.5, vjust = 0.7)) + scale_color_manual(values = c("#D55E00", "#E69F00", "#999999", "#56B4E9", "#0072B2"))
+  pp <- update_labels(pp, list(colour="Time"))
+  plot(pp)
+  p.18s.lst[[i]] <- pp
+}
+
+fig <- plot(ggarrange(p.16s.lst[[1]] + rremove("ylab") + rremove("xlab"),
+               p.16s.lst[[2]] + rremove("ylab") + rremove("xlab"),
+               p.16s.lst[[3]] + rremove("ylab") + rremove("xlab"),
+               p.16s.lst[[4]] + rremove("ylab") + rremove("xlab"),
+               p.16s.lst[[5]] + rremove("ylab") + rremove("xlab"),
+               p.16s.lst[[6]] + rremove("ylab") + rremove("xlab"),
+               p.16s.lst[[7]] + rremove("ylab") + rremove("xlab"),
+               p.16s.lst[[8]] + rremove("ylab") + rremove("xlab"),
+               p.16s.lst[[9]] + rremove("ylab") + rremove("xlab"),
+               p.16s.lst[[10]] + rremove("ylab") + rremove("xlab"),
+               p.16s.lst[[11]] + rremove("ylab") + rremove("xlab"),
+               p.16s.lst[[12]] + rremove("ylab") + rremove("xlab"),
+               p.18s.lst[[1]] + rremove("ylab") + rremove("xlab"),
+               p.18s.lst[[2]] + rremove("ylab") + rremove("xlab"),
+               p.18s.lst[[3]] + rremove("ylab") + rremove("xlab"),
+               p.18s.lst[[4]] + rremove("ylab") + rremove("xlab"),
+               p.18s.lst[[5]] + rremove("ylab") + rremove("xlab"),
+               p.18s.lst[[6]] + rremove("ylab") + rremove("xlab"),
+               p.18s.lst[[7]] + rremove("ylab") + rremove("xlab"),
+               p.18s.lst[[8]] + rremove("ylab") + rremove("xlab"),
+               common.legend = TRUE,
+               ncol = 5, nrow = 4, labels = c("A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T"),
+               font.label = list(size = 22)))
+pdf(paste0(fdir, "fig-7-rel.pdf"), width = 22.5, height = 18)
+annotate_figure(fig, left = textGrob("Relative abundance [log10 scale]", rot = 90, vjust = 1, gp = gpar(cex = 1.8)), bottom = textGrob("Culture setup", gp = gpar(cex = 1.8)))
+dev.off()
+```
+
+# Centered log-ratio profiles of selected taxonomies
+
+```{r figure-7-clr}
+#16S
+biom.16s.clr.genus <- biom.16s.clr %>% tax_glom(taxrank = "Genus")
+#biom.16s.m.clr.genus <- biom.16s.m.clr %>% tax_glom(taxrank = "Genus")
+
+my.genus <- c(
+  "Aureispira",          #most abundant genus in light; most differential expressed; most light specific genus based on DMM model (low relative abundance at 5 but very high at 7 and 11)
+  "Marivita",            #most abundant genus in light and dark; increase over time in the dark; most specific genus for cultivation (light and dark) based on DMM model
+  "Lentibacter",         #most abundant in the ocean
+  "Geitlerinema_PCC-7105", #most light specific genus based on DMM model
+  "Methylophaga",        #most abundant genus in dark; most dark specific genus based on DMM model; increase over time under light
+  "Methylomicrobium",    #most dark specific genus based on DMM model; most diff. abundance in dark compared to light (together with Methylobacter); increase over time under light (very low counts)
+  "Marivivens",          #NW cluster of inoculums; similar relative abundance in the inoculum compared to the cultures
+  "Symphothece_PCC-7002", #cyanobacteria with most diff. abundance in light compared to dark (light specific genus based on DMM model)
+  "Winogradskyella",     #increase over time in the dark
+  "Methylobacter",       #most diff. abundance in dark compared to light (together with Methylomicrobium)
+  "Cyanobium_PCC-6307",  #NW cluste of inoculumns; similar relative abundance in the inoculum compared to the cultures
+  "Methylomonas"        #exist at low amount under light (rel. abundance aggregated over all light+clean incubations: 0.001165191)
+  #"Alteromonas",         #increase in abundance under light conditions similar than cyanobacteria (edgeR light vs dark)
+)
+
+#check abundances of candidates
+#taxid <- tax_table(biom.16s.genus) %>% as.data.frame() %>% filter(Genus=="Methylomicrobium") %>% rownames()
+#otu_table(biom.16s.genus)[taxid,]
+#taxid <- tax_table(biom.16s.clr.genus) %>% as.data.frame() %>% filter(Genus=="Methylomicrobium") %>% rownames()
+#otu_table(biom.16s.clr.genus)[taxid,]
+
+p.16s.lst <- list()
+for(i in 1:length(my.genus)) {
+  taxid <- tax_table(biom.16s.clr.genus) %>% as.data.frame() %>% filter(Genus==my.genus[i]) %>% rownames()
+  temp.1 <- sample_data(biom.16s.clr.genus) %>% as.matrix() %>% as.data.frame() %>% rownames_to_column(var = "SampleID")
+  temp.2 <- otu_table(biom.16s.clr.genus)[taxid,] %>% t() %>% as.data.frame() %>% rownames_to_column(var = "SampleID")
+  colnames(temp.2)[2] <- "clr"
+  temp.3 <- inner_join(temp.1, temp.2, by = "SampleID")
+  temp.3$Culture_setup <- factor(temp.3$Culture_setup, levels = c("ocean", "dark+clean_gas", "light+clean_gas", "light+used_gas"))
+  levels(temp.3$Culture_setup) <- c("Ocean", "Dark", "Light+Clean", "Light+Spent")
+  temp.3$Time_point <- factor(temp.3$Time_point, levels = c("0","5","7","11","14"))
+  pp <- ggplot(temp.3, aes(x = Culture_setup, y = clr)) + geom_boxplot() + geom_jitter(aes(color = Time_point), size=2, alpha=0.8, width = 0.1) + xlab("Culture setup") + ggtitle(my.genus[i]) + theme(legend.position = "none", axis.text.x = element_text(angle = 30, hjust = 0.5, vjust = 0.7))
+  pp <- update_labels(pp, list(colour="Time")) + scale_color_manual(values = c("#D55E00", "#E69F00", "#999999", "#56B4E9", "#0072B2"))
+  plot(pp)
+  p.16s.lst[[i]] <- pp
+}
+
+#18S
+biom.18s.clr.genus <- biom.18s.clr %>% tax_glom(taxrank = "Genus")
+#biom.18s.m.clr.genus <- biom.18s.m.clr %>% tax_glom(taxrank = "Genus")
+
+my.genus <- c(
+  "Picochlorum",         #most abundant genus in light and dark incubation
+  "Nannochloris",        #most abundant genus in light used; increase over time under light and in dark
+  "Chlamydomonas",       #most abundant genus in light clean; increase over time in dark
+  "Aspidisca",           #most abundant genus in dark; most dark specific genus based on DMM model
+  "Tetraselmis",         #most abundant genus in light
+  #"Chlorellales_XX",     #most diff. abundance between light and dark
+  "Rimostrombidium",      #most abundant genus in dark
+  "Paraphysomonas",       #increase over time in dark
+  "Chlorodendrales_XX"  #most light specific genus based on DMM model
+)
+
+p.18s.lst <- list()
+for(i in 1:length(my.genus)) {
+  taxid <- tax_table(biom.18s.clr.genus) %>% as.data.frame() %>% filter(Genus==my.genus[i]) %>% rownames()
+  temp.1 <- sample_data(biom.18s.clr.genus) %>% as.matrix() %>% as.data.frame() %>% rownames_to_column(var = "SampleID")
+  temp.2 <- otu_table(biom.18s.clr.genus)[taxid,] %>% t() %>% as.data.frame() %>% rownames_to_column(var = "SampleID")
+  colnames(temp.2)[2] <- "clr"
+  temp.3 <- inner_join(temp.1, temp.2, by = "SampleID")
+  temp.3$Culture_setup <- factor(temp.3$Culture_setup, levels = c("ocean", "dark+clean_gas", "light+clean_gas", "light+used_gas"))
+  levels(temp.3$Culture_setup) <- c("Ocean", "Dark", "Light+Clean", "Light+Spent")
+  temp.3$Time_point <- factor(temp.3$Time_point, levels = c("0","5","7","11","14"))
+  temp.3
+  my.title <- str_remove(my.genus[i], "_X*$")
+  pp <- ggplot(temp.3, aes(x = Culture_setup, y = clr)) + geom_boxplot() + geom_jitter(aes(color = Time_point), size=2, alpha=0.8, width = 0.1) + xlab("Culture setup") + ggtitle(my.title) + theme(legend.position = "none", axis.text.x = element_text(angle = 30, hjust = 0.5, vjust = 0.7))
+  pp <- update_labels(pp, list(colour="Time")) + scale_color_manual(values = c("#D55E00", "#E69F00", "#999999", "#56B4E9", "#0072B2"))
+  plot(pp)
+  p.18s.lst[[i]] <- pp
+}
+
+fig <- plot(ggarrange(p.16s.lst[[1]] + rremove("ylab") + rremove("xlab"),
+               p.16s.lst[[2]] + rremove("ylab") + rremove("xlab"),
+               p.16s.lst[[3]] + rremove("ylab") + rremove("xlab"),
+               p.16s.lst[[4]] + rremove("ylab") + rremove("xlab"),
+               p.16s.lst[[5]] + rremove("ylab") + rremove("xlab"),
+               p.16s.lst[[6]] + rremove("ylab") + rremove("xlab"),
+               p.16s.lst[[7]] + rremove("ylab") + rremove("xlab"),
+               p.16s.lst[[8]] + rremove("ylab") + rremove("xlab"),
+               p.16s.lst[[9]] + rremove("ylab") + rremove("xlab"),
+               p.16s.lst[[10]] + rremove("ylab") + rremove("xlab"),
+               p.16s.lst[[11]] + rremove("ylab") + rremove("xlab"),
+               p.16s.lst[[12]] + rremove("ylab") + rremove("xlab"),
+               p.18s.lst[[1]] + rremove("ylab") + rremove("xlab"),
+               p.18s.lst[[2]] + rremove("ylab") + rremove("xlab"),
+               p.18s.lst[[3]] + rremove("ylab") + rremove("xlab"),
+               p.18s.lst[[4]] + rremove("ylab") + rremove("xlab"),
+               p.18s.lst[[5]] + rremove("ylab") + rremove("xlab"),
+               p.18s.lst[[6]] + rremove("ylab") + rremove("xlab"),
+               p.18s.lst[[7]] + rremove("ylab") + rremove("xlab"),
+               p.18s.lst[[8]] + rremove("ylab") + rremove("xlab"),
+               common.legend = TRUE,
+               ncol = 5, nrow = 4, labels = c("A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T"),
+               font.label = list(size = 22)))
+pdf(paste0(fdir, "fig-7-clr.pdf"), width = 22.5, height = 18)
+annotate_figure(fig, left = textGrob("Centered log-ratio (CLR)", rot = 90, vjust = 1, gp = gpar(cex = 1.8)),
+                    bottom = textGrob("Culture setup", gp = gpar(cex = 1.8)))
+dev.off()
+```
+
+
+# Hierarchical clustering of samples
+
+```{r hierarchical-clustering, warning=FALSE}
+# average-link clustering
+#library(ggdendro)
+#
+#SILVA 16S
+#p1 <- hclust(phyloseq::distance(biom.16s, "uUniFrac"), method="average")
+#p1$labels <- sample_data(biom.16s)$Label
+#p1 <- ggdendrogram(p1, rotate = FALSE, size = 2)
+#
+#Greengenes 16S
+#load("../results/phyloseq-16s.Rdata")
+#p2 <- hclust(phyloseq::distance(biom.bacteria.16s, "uUniFrac"), method="average")
+#p2$labels <- sample_data(biom.bacteria.16s)$Label
+#p2 <- ggdendrogram(p2, rotate = FALSE, size = 2)
+#
+#SILVA 18S
+#p3 <- hclust(phyloseq::distance(biom.18s, "uUniFrac"), method="average")
+#p3$labels <- sample_data(biom.18s)$Label
+#p3 <- ggdendrogram(p3, rotate = FALSE, size = 2)
+#
+#PR2 18S
+#load("../results/phyloseq-18s.Rdata")
+#p4 <- hclust(phyloseq::distance(biom.eukarytoa.18s, "uUniFrac"), method="average")
+#p4$labels <- sample_data(biom.eukarytoa.18s)$Label
+#p4 <- ggdendrogram(p4, rotate = FALSE, size = 2)
+#
+#pdf(file.path(fdir, "fig-s1.pdf"), width = 14, height = 14)
+#ggarrange(p1, p2, p3, p4, labels = c("A", "B", "C", "D"), nrow = 2, ncol = 2, widths = c(2,2), font.label = list(size = 14))
+#dev.off()
+```
+
+
+# Read length distribution
+
+```{r read-length-distribution, warning=FALSE}
+#f <- "./all-read_length.tsv"
+#
+#read.length <- read.csv2(f, sep = "\t", header = F, stringsAsFactors = F, row.names = NULL)
+#colnames(read.length) <- c("ReadID", "Length", "Barcode", "FeatureID", "Kingdom")
+#
+#read.length <- read.length %>% filter(! Barcode %in% c("flaregas-1","flaregas-2","flaregas-3","flaregas-4","flaregas-5","flaregas-  6","flaregas-7","flaregas-8","flaregas-9"))
+#pdf(paste0(fdir, "fig-s2.pdf"), width = 12, height = 8)
+#ggplot(data = read.length %>% filter(!(Kingdom %in% "d__Archaea")), aes(Length, color=Kingdom)) + geom_density(lwd = 1) + xlim(750,2500) + theme(legend.position = c(0.8, 0.8))
+#dev.off()
+```
+
+
+# Expected species richness (diversity rarefaction curves)
+
+```{r diversity-rarefaction-curves, warning=FALSE}
+library(vegan)
+
+#16S minimap2
+set.seed(1)
+raref <- rarefy_even_depth(t(otu_table(biom.16s.m)), rngseed = 1, sample.size = 0.9*mean(sample_sums(biom.16s.m)), replace = F)
+p1 <- rarecurve(data.frame(otu_table(raref)), step = 10, lwd = 2, cex = 1, label = T, col=brewer.pal(n = 10, name = "RdBu"), tidy = TRUE)
+p1 <- ggplot(data = p1) + geom_line(aes(x = Sample, y = Species, color = Site)) + scale_x_continuous(labels =  scales::scientific_format())
+#18S minimap2
+set.seed(1)
+raref <- rarefy_even_depth(t(otu_table(biom.18s.m)), rngseed = 1, sample.size = 0.9*mean(sample_sums(biom.18s.m)), replace = F)
+p2 <- rarecurve(data.frame(otu_table(raref)), step = 10, lwd = 2, cex = 1, label = T, col=brewer.pal(n = 10, name = "RdBu"), tidy = TRUE)
+p2 <- ggplot(data = p2) + geom_line(aes(x = Sample, y = Species, color = Site)) + scale_x_continuous(labels =  scales::scientific_format())
+#16S Emu
+set.seed(1)
+raref <- rarefy_even_depth(t(otu_table(biom.16s)), rngseed = 1, sample.size = 0.9*mean(sample_sums(biom.16s)), replace = F)
+p3 <- rarecurve(data.frame(otu_table(raref)), step = 10, lwd = 2, cex = 1, label = T, col=brewer.pal(n = 10, name = "RdBu"), tidy = TRUE)
+p3 <- ggplot(data = p3) + geom_line(aes(x = Sample, y = Species, color = Site)) + scale_x_continuous(labels =  scales::scientific_format())
+#18S Emu
+set.seed(1)
+raref <- rarefy_even_depth(t(otu_table(biom.18s)), rngseed = 1, sample.size = 0.9*mean(sample_sums(biom.18s)), replace = F)
+p4 <- rarecurve(data.frame(otu_table(raref)), step = 10, lwd = 2, cex = 1, label = T, col=brewer.pal(n = 10, name = "RdBu"), tidy = TRUE)
+p4 <- ggplot(data = p4) + geom_line(aes(x = Sample, y = Species, color = Site)) + scale_x_continuous(labels =  scales::scientific_format())
+
+pdf(file.path(fdir, "fig-s3.pdf"), width = 14, height = 10)
+ggarrange(p1, p2, p3, p4, labels = c("A", "B", "C", "D"), nrow = 2, ncol = 2, widths = c(2,2), font.label = list(size = 14))
+dev.off()
+```
+
+
+# Species level confidence
+
+```{r species-level-confidence, warning=FALSE}
+#load("./species-distance.SILVA-RESCRIPt.Rdata")
+#scaleFUN <- function(x) sprintf("%.3f", x)
+#p1 <- ggplot(c.d.all, aes(distance, color = class)) + geom_density(linewidth = 2) + scale_x_continuous(trans='log2', labels=scaleFUN) + theme(legend.position = "top", legend.justification="center")
+#p2.s <- ggplot(c.r.stats,aes(x = `distance - distance.x > 0.01`, y = n)) + geom_col() + geom_text(aes(label = n), vjust = -.2) + xlab("confident species") + theme(axis.title.y = element_blank())
+#p3.s <- ggplot(c.counts.species.melt, aes(x=reorder(as.character(Genus_Species), -counts), y=counts, fill = variable)) + geom_col() + theme(axis.text.x = element_text(angle = 67, hjust = 1), axis.title.x = element_blank(), legend.position = "top", legend.justification="center")
+#p4 <- ggplot(m.d.all, aes(distance, color = class)) + geom_density(linewidth = 2) + scale_x_continuous(trans='log2', labels=scaleFUN) + theme(legend.position = "top", legend.justification="center")
+#p5.s <- ggplot(m.r.stats,aes(x = `distance - distance.x > 0.01`, y = n)) + geom_col() + geom_text(aes(label = n), vjust = -.2) + xlab("confident species") + theme(axis.title.y = element_blank())
+#p6.s <- ggplot(m.counts.species.melt, aes(x=reorder(as.character(Genus_Species), -counts), y=counts, fill = variable)) + geom_col() + theme(axis.text.x = element_text(angle = 67, hjust = 1), axis.title.x = element_blank(), legend.position = "top", legend.justification="center")
+
+#pdf(file.path(fdir, "fig-s4.pdf"), width = 20, height = 18)
+#ggarrange(p1, p2.s, p3.s, p4, p5.s, p6.s, labels = c("A", "B", "C", "D", "E", "F"), nrow = 2, ncol = 3, widths = c(2,1,2), font.label = list(size = 20))
+#dev.off()
+```
+
+
+# PCoA screen plots and further components from 16S and 18S
+
+```{r beta-diversity-bray-curtis, warning=FALSE}
+#16S scree plot
+biom.16s.pcoa.bray = ordinate(biom.16s.m, method="PCoA", distance="bray")
+p1 <- plot_scree(biom.16s.pcoa.bray) + theme(text = element_text(size = 12))
+#16S pcoa component 3+4
+p2 <- plot_ordination(biom.16s.m, biom.16s.pcoa.bray, "samples", color="Culture_setup", shape = "Time_point", axes=c(3, 4)) + geom_text_repel(aes(label = Inoculum), size = 3, vjust = 1.2) + geom_point(size=2) + theme(text = element_text(size = 12)) + guides(color = guide_legend(override.aes = list(size = 5)))
+
+#18S scree plot
+biom.18s.pcoa.bray = ordinate(biom.18s.m, method="PCoA", distance="bray")
+p3 <- plot_scree(biom.18s.pcoa.bray) + theme(text = element_text(size = 12))
+#18S pcoa component 3+4
+p4 <- plot_ordination(biom.18s.m, biom.18s.pcoa.bray, "samples", color="Culture_setup", shape = "Time_point", axes=c(3, 4)) + geom_text_repel(aes(label = Inoculum), size = 3, vjust = 1.2) + geom_point(size=2) + theme(text = element_text(size = 12)) + guides(color = guide_legend(override.aes = list(size = 5)))
+
+pdf(file.path(fdir, "fig-s5.pdf"), width = 14, height = 10)
+ggarrange(p1, p2, p3, p4, labels = c("A", "B", "C", "D"), nrow = 2, ncol = 2, widths = c(2,3), font.label = list(size = 14))
+dev.off()
+```
+
+
+# differential relative abundance between light and dark
+
+```{r raldex2-genus-lightVSdark}
+#16S
+load("../results/phyloseq-16s.Rdata")
+#adapt names
+res_sig.aldex <- res_sig.aldex %>% mutate(Genus = if_else(Genus == "Oxyphotobacteria_Incertae_Sedis_Unknown_Family_Unknown_Family", "Oxyphotobacteria_Incertae_Sedis", Genus))
+no.phy <- length(levels(as.factor(res_sig.aldex$Phylum)))
+getPalette = colorRampPalette(brewer.pal(8, "Set1"))
+my.palette = getPalette(no.phy)
+pp.a <- ggplot(res_sig.aldex, aes(y=reorder(Genus,diff.btw), x=diff.btw, color=Phylum)) +
+    geom_point(size=4) +
+    labs(x = "logFC", y = "Genus") +
+    theme(legend.position = "top", legend.justification="right") +
+    scale_color_manual(values = my.palette)
+
+#18S
+load("../results/phyloseq-18s.Rdata")
+res_sig.aldex <- res_sig.aldex %>% mutate(Genus = str_remove(Genus, "_X*$")) %>% mutate(Subdivision = str_remove(Subdivision, "_X"))
+no.phy <- length(levels(as.factor(res_sig.aldex$Subdivision)))
+getPalette = colorRampPalette(brewer.pal(8, "Set1"))
+my.palette = getPalette(no.phy)
+pp.b <- ggplot(res_sig.aldex, aes(y=reorder(Genus,diff.btw), x=diff.btw, color=Subdivision)) +
+    geom_point(size=4) +
+    labs(x = "logFC", y = "Genus") +
+    theme(legend.position = "top", legend.justification="right") +
+    scale_color_manual(values = my.palette)
+
+pdf(paste0(fdir, "fig-s6.pdf"), width = 12, height = 13)
+plot(ggarrange(pp.a, pp.b, ncol = 1, labels = c("A", "B"), heights = c(4.5,3), font.label = list(size = 24)))
+dev.off()
+```
+
+
+# ALDEX2 diagnostic figures
+
+```{r raldex2-genus, warning=FALSE}
+#16S
+load("../results/phyloseq-16s.Rdata")
+# lightVSdark
+glm.test.16s.1 <- glm.test
+glm.eff.16s.1 <- glm.eff
+# incubationVSocean
+glm.test.16s.2 <- glm.test.1
+glm.eff.16s.2 <- glm.eff.1
+
+#18S
+load("../results/phyloseq-18s.Rdata")
+# lightVSdark
+glm.test.16s.3 <- glm.test
+glm.eff.16s.3 <- glm.eff
+# incubationVSocean
+glm.test.16s.4 <- glm.test.1
+glm.eff.16s.4 <- glm.eff.1
+
+pdf(file.path(fdir, "fig-s7.pdf"), width = 8, height = 12)
+par(mfrow = c(4, 3))
+aldex.glm.plot(glm.test.16s.1, eff=glm.eff.16s.1, contrast='Culture_setuplight+clean_gas', type='MW', test='effect', cutoff.effect = 1.5) +
+  title("16S - light VS dark - MW plot")
+aldex.glm.plot(glm.test.16s.1, eff=glm.eff.16s.1, contrast='Culture_setuplight+clean_gas', type='MA', test='effect', cutoff.effect = 1.5) +
+  title("16S -light VS dark - MA plot")
+aldex.glm.plot(glm.test.16s.2, eff=glm.eff.16s.2, contrast='Culture_setuplight+clean_gas', type='MW', test='effect', cutoff.effect = 1.5) +
+  title("16S -light VS ocean - MW plot")
+aldex.glm.plot(glm.test.16s.2, eff=glm.eff.16s.2, contrast='Culture_setuplight+clean_gas', type='MA', test='effect', cutoff.effect = 1.5) +
+  title("16S - light VS ocean - MA plot")
+aldex.glm.plot(glm.test.16s.2, eff=glm.eff.16s.2, contrast='Culture_setupdark+clean_gas', type='MW', test='effect', cutoff.effect = 1.5) +
+  title("16S - dark VS ocean - MW plot")
+aldex.glm.plot(glm.test.16s.2, eff=glm.eff.16s.2, contrast='Culture_setupdark+clean_gas', type='MA', test='effect', cutoff.effect = 1.5) +
+  title("16S - dark VS ocean - MA plot")
+aldex.glm.plot(glm.test.16s.3, eff=glm.eff.16s.3, contrast='Culture_setuplight+clean_gas', type='MW', test='effect', cutoff.effect = 1.5) +
+  title("18S - light VS dark - MW plot")
+aldex.glm.plot(glm.test.16s.3, eff=glm.eff.16s.3, contrast='Culture_setuplight+clean_gas', type='MA', test='effect', cutoff.effect = 1.5) +
+  title("18S -light VS dark - MA plot")
+aldex.glm.plot(glm.test.16s.4, eff=glm.eff.16s.4, contrast='Culture_setuplight+clean_gas', type='MW', test='effect', cutoff.effect = 1.5) +
+  title("18S -light VS ocean - MW plot")
+aldex.glm.plot(glm.test.16s.4, eff=glm.eff.16s.4, contrast='Culture_setuplight+clean_gas', type='MA', test='effect', cutoff.effect = 1.5) +
+  title("18S - light VS ocean - MA plot")
+aldex.glm.plot(glm.test.16s.4, eff=glm.eff.16s.4, contrast='Culture_setupdark+clean_gas', type='MW', test='effect', cutoff.effect = 1.5) +
+  title("18S - dark VS ocean - MW plot")
+aldex.glm.plot(glm.test.16s.4, eff=glm.eff.16s.4, contrast='Culture_setupdark+clean_gas', type='MA', test='effect', cutoff.effect = 1.5) +
+  title("18S - dark VS ocean - MA plot")
+dev.off()
+```
+
+
+# Contribution of genera with highest impact to each cluster retrieved by DMM model
+
+```{r dirichlet-multinomial-mixture, warning=FALSE}
+# Contribution of each taxonomic group to each component
+#16S
+load("../results/phyloseq-16s.Rdata")
+p.16s.lst <- list()
+for (k in seq(ncol(fitted(best)))) {
+  d <- melt(fitted(best))
+  colnames(d) <- c("OTU", "cluster", "value")
+  d <- subset(d, cluster == k) %>%
+     # Arrange OTUs by assignment strength
+     arrange(value) %>%
+     mutate(OTU = factor(OTU, levels = unique(OTU))) %>%
+     # Only show the most important drivers
+     filter(abs(value) > quantile(abs(value), 0.8))     
+
+  p.16s.lst[[k]] <- ggplot(d, aes(x = OTU, y = value)) +
+       geom_bar(stat = "identity") +
+       coord_flip() +
+       labs(title = paste("16S cluster", k))
+}
+#18S
+load("../results/phyloseq-18s.Rdata")
+p.18s.lst <- list()
+for (k in seq(ncol(fitted(best)))) {
+  d <- melt(fitted(best))
+  colnames(d) <- c("OTU", "cluster", "value")
+  d <- subset(d, cluster == k) %>%
+     # Arrange OTUs by assignment strength
+     arrange(value) %>%
+     mutate(OTU = factor(OTU, levels = unique(OTU))) %>%
+     # Only show the most important drivers
+     filter(abs(value) > quantile(abs(value), 0.8))     
+
+  p.18s.lst[[k]] <- ggplot(d, aes(x = OTU, y = value)) +
+       geom_bar(stat = "identity") +
+       coord_flip() +
+       labs(title = paste("18S cluster", k))
+}
+
+pdf(file.path(fdir, "fig-s9.pdf"), width = 16, height = 20)
+ggarrange(p.16s.lst[[1]], p.16s.lst[[2]], p.16s.lst[[3]], p.18s.lst[[1]], p.18s.lst[[2]], p.18s.lst[[3]], labels = c("A", "B", "C", "D", "E", "F"), nrow = 2, ncol = 3, widths = c(1,1,1), font.label = list(size = 14)) 
+dev.off()
+```
